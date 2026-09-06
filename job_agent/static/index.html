@@ -90,6 +90,24 @@
     .sheet label { display: block; color: var(--muted); font-size: 13px; margin: 14px 0 6px; }
     .sheet select, .sheet input { width: 100%; }
     .sheet button { width: 100%; margin-top: 10px; }
+    .settings-link {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      text-align: left;
+      margin-bottom: 8px;
+    }
+    .personalization-details {
+      display: none;
+      padding: 4px 2px 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .personalization-details.open { display: block; }
+    .personalization-item {
+      padding: 8px 0;
+      border-bottom: 1px solid var(--line);
+    }
     #settings-log {
       white-space: pre-wrap;
       color: var(--muted);
@@ -117,6 +135,15 @@
   <div class="overlay" id="settings">
     <div class="sheet">
       <h2>Settings</h2>
+      <button class="settings-link" id="personalization-toggle">
+        <span>Juno personalization</span>
+        <span id="personalization-count">0 active</span>
+      </button>
+      <div class="personalization-details" id="personalization-details">
+        Confirmed learnings and communication preferences shape how Juno helps you.
+        Tell Juno what to remember or how you prefer to work.
+        <div id="personalization-items"></div>
+      </div>
       <label for="model-select">Model</label>
       <select id="model-select"></select>
       <label for="model-custom">Or enter a model id</label>
@@ -137,6 +164,9 @@
     const $log = document.getElementById("settings-log");
     const $select = document.getElementById("model-select");
     const $custom = document.getElementById("model-custom");
+    const $personalizationDetails = document.getElementById("personalization-details");
+    const $personalizationCount = document.getElementById("personalization-count");
+    const $personalizationItems = document.getElementById("personalization-items");
     let ready = false;
     let conversationId = null;
 
@@ -167,6 +197,25 @@
       return data;
     }
 
+    async function refreshPersonalization() {
+      const data = await (await fetch("/api/personalization")).json();
+      const total = (data.learningCount || 0) + (data.preferenceCount || 0);
+      $personalizationCount.textContent = `${total} active`;
+      $personalizationItems.replaceChildren();
+      const items = [
+        ...(data.learnings || []).map((item) => item.claim),
+        ...(data.communicationPreferences || []).map(
+          (item) => `${item.dimension}: ${JSON.stringify(item.value)}`
+        ),
+      ];
+      for (const text of items) {
+        const row = document.createElement("div");
+        row.className = "personalization-item";
+        row.textContent = text;
+        $personalizationItems.appendChild(row);
+      }
+    }
+
     function add(role, text) {
       const div = document.createElement("div");
       div.className = "msg " + role;
@@ -191,6 +240,11 @@
     document.getElementById("open-settings").onclick = () => {
       document.getElementById("settings").classList.add("open");
       refresh();
+      refreshPersonalization();
+    };
+    document.getElementById("personalization-toggle").onclick = () => {
+      $personalizationDetails.classList.toggle("open");
+      refreshPersonalization();
     };
     document.getElementById("close-settings").onclick = () => {
       document.getElementById("settings").classList.remove("open");

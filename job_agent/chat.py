@@ -6,6 +6,7 @@ from urllib.request import Request, urlopen
 
 from job_agent.config import load_config
 from job_agent.paths import system_prompt_path
+from job_agent.personalization import personalization_prompt
 from job_agent.repo_tools import call_tool, openai_tools
 
 
@@ -31,7 +32,7 @@ def system_message() -> dict[str, str]:
         "\nYou are Juno, running inside the Clover desktop/CLI app. "
         "Use function tools when they can answer from this repository."
     )
-    return {"role": "system", "content": prompt + extra}
+    return {"role": "system", "content": prompt + extra + personalization_prompt()}
 
 
 def complete(user_messages: list[dict[str, Any]], max_tool_rounds: int = 6) -> dict[str, Any]:

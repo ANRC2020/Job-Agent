@@ -16,6 +16,7 @@ from job_agent.branding import apply_app_branding
 from job_agent.chat import complete
 from job_agent.config import load_config
 from job_agent.lmstudio import status
+from job_agent.personalization import personalization_data
 from job_agent.runtime import start_runtime, stop_runtime, switch_model
 from job_agent.setup import run_setup
 from job_agent.storage import (
@@ -64,6 +65,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             code, body, ctype = _json_bytes(app_status())
+            self._send(code, body, ctype)
+            return
+        if path == "/api/personalization":
+            code, body, ctype = _json_bytes(personalization_data())
             self._send(code, body, ctype)
             return
         self._send(404, b"Not found", "text/plain")

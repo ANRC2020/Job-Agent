@@ -42,6 +42,10 @@ The local model can safely describe the schema, list/get records, create and upd
 search conversations, person memory, jobs, interactions, and learnings. Raw SQL and internal
 migration tables are not exposed to the model.
 
+Confirmed learnings and explicitly stated communication preferences are automatically added to
+Juno's system context. Unreviewed model guesses are excluded. The active personalization is visible
+under **Settings → Juno personalization**.
+
 ## After install
 
 Opening Clover starts Juno's local Qwen model. Closing it shuts that local model down.
