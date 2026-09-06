@@ -34,6 +34,10 @@ learnings. Application updates do not overwrite this data.
 - Mac: `~/Library/Application Support/Job Agent/job-agent.sqlite3`
 - Windows: `%LOCALAPPDATA%\Job Agent\job-agent.sqlite3`
 
+The local model can safely describe the schema, list/get records, create and update records, and
+search conversations, person memory, jobs, interactions, and learnings. Raw SQL and internal
+migration tables are not exposed to the model.
+
 ## After install
 
 Opening the app starts Qwen. Closing it shuts that local model down.

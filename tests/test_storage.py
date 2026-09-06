@@ -31,9 +31,12 @@ class StorageTests(unittest.TestCase):
         first = initialize_database()
         second = initialize_database()
 
-        self.assertEqual(["001_initial.sql"], first["migrationsApplied"])
+        self.assertEqual(
+            ["001_initial.sql", "002_person_memory_search.sql"],
+            first["migrationsApplied"],
+        )
         self.assertEqual([], second["migrationsApplied"])
-        self.assertEqual(1, database_status()["schemaVersion"])
+        self.assertEqual(2, database_status()["schemaVersion"])
 
     def test_all_three_domains_are_installed(self) -> None:
         initialize_database()

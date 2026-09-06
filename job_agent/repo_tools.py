@@ -3,6 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from job_agent.db_tools import (
+    create_database_record,
+    describe_database,
+    get_database_record,
+    list_database_records,
+    search_database,
+    update_database_record,
+)
 from job_agent.paths import repo_root, system_prompt_path
 
 ROOT = repo_root()
@@ -81,6 +89,143 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": "Return the Job Agent system prompt shipped with this repo.",
         "schema": {"type": "object", "properties": {}},
         "handler": tool_get_system_prompt,
+    },
+    "describe_database": {
+        "description": (
+            "Describe the local Job Agent database, including table purposes, fields, foreign keys, "
+            "and behavioral rules. Use before writing an unfamiliar record or when deciding whether "
+            "information is a source fact, job-process record, or derived learning. Pass a domain to "
+            "reduce context; omit it only for a broad overview."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "enum": ["person", "jobs", "learnings"],
+                    "description": "Optional domain to inspect. Omit for all domains.",
+                }
+            },
+        },
+        "handler": describe_database,
+    },
+    "list_database_records": {
+        "description": (
+            "Read structured records from one allowed database table using exact-match filters. "
+            "Use for lookups such as active job processes, profile facts by category, or confirmed "
+            "learnings. This does not accept raw SQL. Call describe_database when fields are unclear; "
+            "use search_database for free-text recall."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "description": "Allowed domain table name returned by describe_database.",
+                },
+                "filters": {
+                    "type": "object",
+                    "description": "Optional exact-match field/value filters joined with AND.",
+                    "additionalProperties": True,
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Maximum records; defaults to 25.",
+                },
+            },
+            "required": ["table"],
+        },
+        "handler": list_database_records,
+    },
+    "get_database_record": {
+        "description": (
+            "Read one complete database record by table and id. Use after search_database or "
+            "list_database_records returns an id and full structured context is needed."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "table": {"type": "string", "description": "Allowed domain table name."},
+                "id": {"type": "string", "description": "Record UUID or stable id."},
+            },
+            "required": ["table", "id"],
+        },
+        "handler": get_database_record,
+    },
+    "create_database_record": {
+        "description": (
+            "Create one record in an allowed database table. Use describe_database first. The tool "
+            "generates id and timestamps, and defaults person_id to local-user. Preserve provenance "
+            "with source_id when available. Direct user facts belong in profile_fact; interpretations "
+            "belong in learning with confidence and separate learning_evidence. Never silently infer "
+            "sensitive traits. Append stage events and material versions rather than rewriting history."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "table": {"type": "string", "description": "Allowed domain table name."},
+                "values": {
+                    "type": "object",
+                    "description": "Field/value object. JSON columns accept objects or arrays.",
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["table", "values"],
+        },
+        "handler": create_database_record,
+    },
+    "update_database_record": {
+        "description": (
+            "Update mutable fields on one database record. Use for corrections, statuses, review "
+            "states, next actions, and current job stage. Do not rewrite messages, stage events, "
+            "evidence, or submitted materials; create an appended record or new version instead."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "table": {"type": "string", "description": "Allowed domain table name."},
+                "id": {"type": "string", "description": "Record id to update."},
+                "changes": {
+                    "type": "object",
+                    "description": "Mutable fields and new values. id and created_at are protected.",
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["table", "id", "changes"],
+        },
+        "handler": update_database_record,
+    },
+    "search_database": {
+        "description": (
+            "Search text across prior conversations, personal documents, jobs, job interactions, "
+            "and learnings. Use before answering from memory, tailoring application materials, "
+            "recommending jobs, or recording a potentially duplicate learning. Limit scopes to the "
+            "minimum relevant context. Results contain ids; use get_database_record for full details."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "SQLite FTS5 search expression."},
+                "scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["person", "conversations", "jobs", "interactions", "learnings"],
+                    },
+                    "description": "Optional search areas. Defaults to all.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum results per scope; defaults to 10.",
+                },
+            },
+            "required": ["query"],
+        },
+        "handler": search_database,
     },
 }
 
