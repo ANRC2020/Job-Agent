@@ -11,6 +11,7 @@ from job_agent.desktop import install_desktop, launch_desktop
 from job_agent.lmstudio import status
 from job_agent.runtime import start_runtime, stop_runtime
 from job_agent.setup import run_setup
+from job_agent.storage import database_status, initialize_database
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,7 +56,10 @@ def main(argv: list[str] | None = None) -> int:
         stop_runtime(full_shutdown=True)
         return 0
     if cmd == "status":
-        print(json.dumps(status(), indent=2))
+        initialize_database()
+        result = status()
+        result["database"] = database_status()
+        print(json.dumps(result, indent=2))
         return 0
     if cmd == "chat":
         prompt = " ".join(getattr(args, "prompt", [])).strip()

@@ -13,6 +13,7 @@ from job_agent.lmstudio import (
     lms,
     lms_bin,
 )
+from job_agent.storage import initialize_database
 
 
 Log = Callable[[str], None]
@@ -76,6 +77,11 @@ def _install_desktop(log: Log) -> None:
 def run_setup(log: Log = print) -> None:
     cfg = load_config()
     log("Job Agent setup")
+    database = initialize_database()
+    if database["migrationsApplied"]:
+        log(f"Installed local database at {database['path']}")
+    else:
+        log(f"Local database ready at {database['path']}")
     _install_cli(log)
     _install_desktop(log)
     if lms_bin() is None:

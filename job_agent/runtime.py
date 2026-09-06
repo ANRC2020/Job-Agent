@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from job_agent.config import load_config
-from job_agent.lmstudio import lms, lms_bin, server_reachable, status
+from job_agent.config import load_config, save_model
+from job_agent.lmstudio import downloaded_models, lms, lms_bin, server_reachable, status
 
 
 @dataclass
@@ -43,6 +43,27 @@ def start_runtime(log=print) -> RuntimeSession:
         log((started.stdout or started.stderr).strip() or "server start")
         session.started_server = True
     return session
+
+
+def switch_model(model: str, log=print) -> RuntimeSession:
+    name = model.strip()
+    if not name:
+        raise ValueError("Model is required")
+    save_model(name)
+    if lms_bin() is None:
+        raise FileNotFoundError("LM Studio CLI is not installed. Run setup from Settings.")
+    listed = " ".join(downloaded_models())
+    if name not in listed and name.split("/")[-1] not in listed:
+        log(f"Downloading {name}")
+        got = lms("get", name, "--yes")
+        if got.returncode != 0:
+            raise RuntimeError(got.stderr or got.stdout or "Model download failed")
+        log((got.stdout or got.stderr).strip())
+    try:
+        lms("unload", "--all")
+    except Exception:
+        pass
+    return start_runtime(log)
 
 
 def stop_runtime(session: RuntimeSession | None = None, log=print, *, full_shutdown: bool = True) -> None:

@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" type="image/png" href="/app-icon.png" />
+  <title>Job Agent</title>
+  <link rel="icon" type="image/png" href="/app-icon.png" />
   <style>
     :root {
       --bg: #14120f;
@@ -12,8 +13,6 @@
       --ink: #f3ece3;
       --muted: #b7aa9a;
       --accent: #e2a15a;
-      --good: #8fbf88;
-      --bad: #d9897a;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; }
@@ -22,119 +21,149 @@
       background: var(--bg);
       color: var(--ink);
     }
-    .shell {
-      display: grid;
-      grid-template-columns: 280px 1fr;
-      height: 100%;
-    }
-    aside {
-      border-right: 1px solid var(--line);
-      padding: 28px 22px;
-      background: var(--panel);
-    }
-    h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.03em; }
-    .tag { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
-    .pill {
+    .app { display: flex; flex-direction: column; height: 100%; }
+    header {
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      padding: 8px 0;
+      padding: 16px 22px;
       border-bottom: 1px solid var(--line);
-      font-size: 13px;
     }
-    .ok { color: var(--good); }
-    .no { color: var(--bad); }
-    button {
-      width: 100%;
-      margin-top: 12px;
-      background: transparent;
-      color: var(--ink);
-      border: 1px solid var(--line);
-      padding: 10px 12px;
-      font: inherit;
-      cursor: pointer;
-    }
-    button.primary { background: var(--accent); color: #1a140c; border-color: var(--accent); }
-    button:disabled { opacity: 0.5; cursor: wait; }
-    main { display: flex; flex-direction: column; height: 100%; }
-    #log {
-      max-height: 120px;
-      overflow: auto;
+    h1 { font-size: 20px; margin: 0; letter-spacing: -0.03em; font-weight: 600; }
+    .hint { color: var(--muted); font-size: 13px; }
+    .gear {
+      background: none;
+      border: 0;
       color: var(--muted);
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 12px;
-      white-space: pre-wrap;
-      padding: 0 28px;
+      font-size: 18px;
+      cursor: pointer;
+      padding: 6px 8px;
     }
-    #thread {
-      flex: 1;
-      overflow: auto;
-      padding: 28px;
-    }
-    .msg { margin: 0 0 18px; max-width: 46rem; }
+    .gear:hover { color: var(--ink); }
+    #thread { flex: 1; overflow: auto; padding: 28px 22px; }
+    .msg { margin: 0 0 18px; max-width: 42rem; }
     .msg.user { margin-left: auto; color: var(--accent); }
     .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
     form {
       display: flex;
       gap: 8px;
-      padding: 18px 28px 24px;
+      padding: 16px 22px 22px;
       border-top: 1px solid var(--line);
     }
-    textarea {
-      flex: 1;
-      resize: none;
-      min-height: 54px;
+    textarea, input, select {
       background: var(--panel);
       color: var(--ink);
       border: 1px solid var(--line);
       padding: 12px;
       font: inherit;
     }
-    @media (max-width: 800px) {
-      .shell { grid-template-columns: 1fr; }
-      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+    textarea { flex: 1; resize: none; min-height: 54px; }
+    button {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 10px 14px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary { background: var(--accent); color: #1a140c; border-color: var(--accent); }
+    button:disabled { opacity: 0.45; cursor: default; }
+    .overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 8, 6, 0.55);
+    }
+    .overlay.open { display: block; }
+    .sheet {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: min(380px, 100%);
+      background: var(--panel);
+      border-left: 1px solid var(--line);
+      padding: 22px;
+      overflow: auto;
+    }
+    .sheet h2 { font-size: 16px; margin: 0 0 16px; }
+    .sheet label { display: block; color: var(--muted); font-size: 13px; margin: 14px 0 6px; }
+    .sheet select, .sheet input { width: 100%; }
+    .sheet button { width: 100%; margin-top: 10px; }
+    #settings-log {
+      white-space: pre-wrap;
+      color: var(--muted);
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: 11px;
+      margin-top: 16px;
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <aside>
-      <h1>Job Agent</h1>
-      <div class="tag">Local Qwen via LM Studio</div>
-      <div id="status"></div>
-      <button id="setup">Run setup</button>
-      <button id="start">Start model</button>
-      <button class="primary" id="refresh">Refresh status</button>
-    </aside>
-    <main>
-      <div id="log"></div>
-      <div id="thread"></div>
-      <form id="composer">
-        <textarea id="input" placeholder="Ask the agent to use repo tools…"></textarea>
-        <button class="primary" type="submit" style="width:auto; align-self:flex-end;">Send</button>
-      </form>
-    </main>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Job Agent</h1>
+        <div class="hint" id="hint">Starting the model…</div>
+      </div>
+      <button class="gear" id="open-settings" title="Settings" aria-label="Settings">⚙</button>
+    </header>
+    <div id="thread"></div>
+    <form id="composer">
+      <textarea id="input" placeholder="Ask anything…" disabled></textarea>
+      <button class="primary" id="send" type="submit" disabled>Send</button>
+    </form>
+  </div>
+  <div class="overlay" id="settings">
+    <div class="sheet">
+      <h2>Settings</h2>
+      <label for="model-select">Model</label>
+      <select id="model-select"></select>
+      <label for="model-custom">Or enter a model id</label>
+      <input id="model-custom" placeholder="qwen/qwen3.5-9b" />
+      <button class="primary" id="apply-model">Save and reload model</button>
+      <button id="relaunch">Relaunch current model</button>
+      <button id="setup">Repair install</button>
+      <button id="close-settings">Close</button>
+      <div id="settings-log"></div>
+    </div>
   </div>
   <script>
     const thread = [];
-    const $status = document.getElementById("status");
+    const $hint = document.getElementById("hint");
     const $thread = document.getElementById("thread");
-    const $log = document.getElementById("log");
     const $input = document.getElementById("input");
+    const $send = document.getElementById("send");
+    const $log = document.getElementById("settings-log");
+    const $select = document.getElementById("model-select");
+    const $custom = document.getElementById("model-custom");
+    let ready = false;
+    let conversationId = null;
 
-    function pill(label, ok) {
-      return `<div class="pill"><span>${label}</span><span class="${ok ? "ok" : "no"}">${ok ? "ready" : "missing"}</span></div>`;
+    function setReady(isReady, model) {
+      ready = isReady;
+      $input.disabled = !isReady;
+      $send.disabled = !isReady;
+      $hint.textContent = isReady ? "Ready" : "Starting the model…";
+      if (model) $custom.placeholder = model;
+    }
+
+    function fillModels(data) {
+      const models = data.availableModels || [];
+      const current = data.model || "";
+      $select.innerHTML = models.map((name) => {
+        const selected = name === current ? " selected" : "";
+        return `<option value="${name}"${selected}>${name}</option>`;
+      }).join("");
+      if (current && !models.includes(current)) {
+        $select.innerHTML = `<option value="${current}" selected>${current}</option>` + $select.innerHTML;
+      }
     }
 
     async function refresh() {
       const data = await (await fetch("/api/status")).json();
-      $status.innerHTML = [
-        pill("LM Studio CLI", data.cliInstalled),
-        pill("Desktop app", data.desktopInstalled),
-        pill(data.model, data.modelDownloaded),
-        pill("Local server", data.serverRunning),
-        pill("Model loaded", data.modelLoaded),
-      ].join("");
+      setReady(Boolean(data.ready), data.model);
+      fillModels(data);
       return data;
     }
 
@@ -147,23 +176,39 @@
       $thread.scrollTop = $thread.scrollHeight;
     }
 
-    document.getElementById("refresh").onclick = refresh;
-    document.getElementById("setup").onclick = async () => {
-      $log.textContent = "Running setup…";
-      const res = await fetch("/api/setup", { method: "POST", body: "{}" });
+    async function post(path, body) {
+      $log.textContent = "Working…";
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
       const data = await res.json();
       $log.textContent = (data.logs || [data.error]).join("\n");
       await refresh();
+    }
+
+    document.getElementById("open-settings").onclick = () => {
+      document.getElementById("settings").classList.add("open");
+      refresh();
     };
-    document.getElementById("start").onclick = async () => {
-      $log.textContent = "Starting runtime…";
-      const res = await fetch("/api/start", { method: "POST", body: "{}" });
-      const data = await res.json();
-      $log.textContent = (data.logs || [data.error]).join("\n");
-      await refresh();
+    document.getElementById("close-settings").onclick = () => {
+      document.getElementById("settings").classList.remove("open");
     };
+    document.getElementById("settings").addEventListener("click", (event) => {
+      if (event.target.id === "settings") event.currentTarget.classList.remove("open");
+    });
+    document.getElementById("relaunch").onclick = () => post("/api/start", {});
+    document.getElementById("setup").onclick = () => post("/api/setup", {});
+    document.getElementById("apply-model").onclick = () => {
+      const model = $custom.value.trim() || $select.value;
+      if (!model) return;
+      post("/api/model", { model });
+    };
+
     document.getElementById("composer").onsubmit = async (event) => {
       event.preventDefault();
+      if (!ready) return;
       const text = $input.value.trim();
       if (!text) return;
       $input.value = "";
@@ -174,15 +219,15 @@
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: thread }),
+        body: JSON.stringify({ messages: thread, conversationId }),
       });
       const data = await res.json();
       if (data.error) {
         pending.lastChild.textContent = data.error;
         return;
       }
-      const bits = (data.tools || []).map((t) => `[${t.tool}]`).join(" ");
-      pending.lastChild.textContent = (bits ? bits + "\n" : "") + (data.content || "");
+      conversationId = data.conversationId || conversationId;
+      pending.lastChild.textContent = data.content || "";
       thread.push({ role: "assistant", content: data.content || "" });
     };
 
@@ -194,7 +239,10 @@
     });
 
     refresh();
-    setInterval(refresh, 3000);
+    const poll = setInterval(async () => {
+      const data = await refresh();
+      if (data.ready) clearInterval(poll);
+    }, 1500);
   </script>
 </body>
 </html>

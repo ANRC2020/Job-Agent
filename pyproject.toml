@@ -18,4 +18,4 @@ job-agent = "job_agent.cli:main"
 include = ["job_agent*"]
 
 [tool.setuptools.package-data]
-job_agent = ["static/*"]
+job_agent = ["static/*", "migrations/*.sql"]

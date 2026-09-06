@@ -58,6 +58,20 @@ def lms(*args: str) -> subprocess.CompletedProcess[str]:
     return _run([str(binary), *args])
 
 
+def downloaded_models() -> list[str]:
+    if lms_bin() is None:
+        return []
+    listed = lms("ls")
+    if listed.returncode != 0:
+        return []
+    names: list[str] = []
+    for line in listed.stdout.splitlines():
+        token = line.strip().split()[0] if line.strip() else ""
+        if "/" in token and token not in names:
+            names.append(token.split("(")[0])
+    return names
+
+
 def server_reachable() -> bool:
     cfg = load_config()
     try:
@@ -91,10 +105,12 @@ def status() -> dict[str, Any]:
         "cliPath": str(binary) if binary else None,
         "desktopInstalled": desktop_installed(),
         "model": cfg.model,
+        "availableModels": downloaded_models() if binary is not None else [],
         "modelDownloaded": bool(models),
         "daemonRunning": daemon,
         "serverRunning": server_reachable(),
         "modelLoaded": loaded,
+        "ready": server_reachable() and loaded,
         "apiBase": cfg.api_base,
         "appPort": cfg.app_port,
         "repoRoot": str(repo_root()),

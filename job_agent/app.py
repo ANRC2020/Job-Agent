@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,14 +16,28 @@ from job_agent.branding import apply_app_branding
 from job_agent.chat import complete
 from job_agent.config import load_config
 from job_agent.lmstudio import status
-from job_agent.runtime import start_runtime, stop_runtime
+from job_agent.runtime import start_runtime, stop_runtime, switch_model
 from job_agent.setup import run_setup
+from job_agent.storage import (
+    add_message,
+    add_model_run,
+    conversation_exists,
+    create_conversation,
+    database_status,
+    initialize_database,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def _json_bytes(payload: object, code: int = 200) -> tuple[int, bytes, str]:
     return code, json.dumps(payload).encode("utf-8"), "application/json"
+
+
+def app_status() -> dict:
+    result = status()
+    result["database"] = database_status()
+    return result
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -48,7 +63,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, icon.read_bytes(), "image/png")
             return
         if path == "/api/status":
-            code, body, ctype = _json_bytes(status())
+            code, body, ctype = _json_bytes(app_status())
             self._send(code, body, ctype)
             return
         self._send(404, b"Not found", "text/plain")
@@ -75,6 +90,13 @@ class Handler(BaseHTTPRequestHandler):
                 code, body, ctype = _json_bytes({"ok": True, "logs": logs, "status": status()})
                 self._send(code, body, ctype)
                 return
+            if path == "/api/model":
+                logs: list[str] = []
+                model = str(payload.get("model") or "")
+                switch_model(model, log=logs.append)
+                code, body, ctype = _json_bytes({"ok": True, "logs": logs, "status": status()})
+                self._send(code, body, ctype)
+                return
             if path == "/api/stop":
                 logs: list[str] = []
                 stop_runtime(log=logs.append, full_shutdown=True)
@@ -83,7 +105,39 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/chat":
                 messages = payload.get("messages") or []
+                conversation_id = str(payload.get("conversationId") or "")
+                if not conversation_id or not conversation_exists(conversation_id):
+                    first_message = next(
+                        (str(item.get("content") or "") for item in messages if item.get("role") == "user"),
+                        "",
+                    )
+                    conversation_id = create_conversation(title=first_message[:80] or None)
+                latest_user = next(
+                    (
+                        str(item.get("content") or "")
+                        for item in reversed(messages)
+                        if item.get("role") == "user"
+                    ),
+                    "",
+                )
+                if latest_user:
+                    add_message(conversation_id, "user", latest_user)
+                started = time.monotonic()
                 result = complete(messages)
+                run_id = add_model_run(
+                    provider="lm-studio",
+                    model=str(result.get("model") or load_config().model),
+                    output=result,
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                )
+                if result.get("content"):
+                    add_message(
+                        conversation_id,
+                        "assistant",
+                        str(result["content"]),
+                        model_run_id=run_id,
+                    )
+                result["conversationId"] = conversation_id
                 code, body, ctype = _json_bytes(result)
                 self._send(code, body, ctype)
                 return
@@ -155,6 +209,7 @@ def serve(
     open_browser: bool = True,
     manage_runtime: bool = True,
 ) -> None:
+    initialize_database()
     cfg = load_config()
     port = port or cfg.app_port
     httpd, port = _bind_server(port)
