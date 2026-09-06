@@ -4,6 +4,8 @@ Frictionless job applications — a local desktop app that runs Qwen through [LM
 
 ## Install
 
+You do not need to install Python. The installer downloads a private copy.
+
 ```bash
 git clone https://github.com/ANRC2020/Job-Agent.git
 cd Job-Agent
@@ -21,7 +23,7 @@ cd Job-Agent
 .\install.ps1
 ```
 
-That installs the desktop app, sets up LM Studio only if it is missing, and opens Job Agent. Python 3 is required.
+That installs the desktop app, sets up LM Studio only if it is missing, and opens Job Agent.
 
 ## After install
 

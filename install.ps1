@@ -1,38 +1,33 @@
-# Install Job Agent (CLI + desktop) and set up LM Studio only if needed.
+# Install Job Agent. Bundles its own Python via uv — no system Python needed.
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 
-function Get-Python {
-    foreach ($launcher in @("python", "py")) {
-        try {
-            if ($launcher -eq "py") {
-                Get-Command py -ErrorAction Stop | Out-Null
-                $exe = (& py -3 -c "import sys; print(sys.executable)").Trim()
-                if ($exe) { return $exe }
-            } else {
-                $ver = & python -c "import sys; print(sys.version_info[0])" 2>$null
-                if ($ver -eq "3") {
-                    return (& python -c "import sys; print(sys.executable)").Trim()
-                }
-            }
-        } catch { continue }
-    }
+$env:Path = "$env:USERPROFILE\.local\bin;$env:CARGO_HOME\bin;$env:Path"
+
+function Get-Uv {
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    if ($uv) { return $uv.Source }
+    $local = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
+    if (Test-Path $local) { return $local }
     return $null
 }
 
-$Python = Get-Python
-if (-not $Python) { throw "Python 3 is required. Install it from https://www.python.org/downloads/ then re-run." }
-
-$VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
-if (-not (Test-Path $VenvPython)) {
-    Write-Host "==> Creating virtualenv"
-    & $Python -m venv (Join-Path $Root ".venv")
+if (-not (Get-Uv)) {
+    Write-Host "==> Installing a local Python runtime (uv)"
+    irm https://astral.sh/uv/install.ps1 | iex
 }
 
+$Uv = Get-Uv
+if (-not $Uv) { throw "Could not install uv. See https://docs.astral.sh/uv/getting-started/installation/" }
+
+Write-Host "==> Creating virtualenv"
+& $Uv python install 3.12
+& $Uv venv .venv --python 3.12 --allow-existing
+
+$VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 Write-Host "==> Installing job-agent"
-& $VenvPython -m pip install -U pip
-& $VenvPython -m pip install -e $Root
+& $Uv pip install --python $VenvPython -e $Root
 
 $JobAgent = Join-Path $Root ".venv\Scripts\job-agent.exe"
 Write-Host "==> Running setup"

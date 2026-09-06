@@ -11,7 +11,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from job_agent.config import load_config
-from job_agent.paths import lmstudio_home, repo_root, system_prompt_path
+from job_agent.paths import lmstudio_home, repo_root, system_prompt_path, venv_python
 
 
 def lms_bin() -> Path | None:
@@ -110,7 +110,8 @@ def ensure_prompt_and_mcp() -> None:
     if src.is_file():
         dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
-    python = shutil.which("python3") or shutil.which("python")
+    bundled = venv_python()
+    python = str(bundled) if bundled else (shutil.which("python3") or shutil.which("python"))
     if not python:
         return
     mcp_path = home / "mcp.json"

@@ -136,13 +136,16 @@ def _write_mac_app(log) -> Path:
 
 def _install_desktop_alias(app: Path, log) -> None:
     desktop = Path.home() / "Desktop"
-    for name in ("Job Agent.app", "Job Agent"):
+    for name in ("Job Agent.app",):
         path = desktop / name
         if path.exists() or path.is_symlink():
             try:
                 path.unlink()
             except OSError:
                 pass
+    if (desktop / "Job Agent").exists():
+        log("Desktop shortcut is named Job Agent")
+        return
     script = f'''
 tell application "Finder"
   set theApp to POSIX file "{app}" as alias
