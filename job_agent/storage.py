@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-APP_NAME = "Job Agent"
+APP_NAME = "Clover"
+LEGACY_APP_NAME = "Job Agent"
 DEFAULT_PERSON_ID = "local-user"
 
 
@@ -25,16 +26,25 @@ def app_data_dir() -> Path:
         return Path(override).expanduser().resolve()
     system = platform.system()
     if system == "Darwin":
-        return Path.home() / "Library" / "Application Support" / APP_NAME
+        root = Path.home() / "Library" / "Application Support"
+        current = root / APP_NAME
+        legacy = root / LEGACY_APP_NAME
+        return current if current.exists() or not legacy.exists() else legacy
     if system == "Windows":
         root = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-        return root / APP_NAME
+        current = root / APP_NAME
+        legacy = root / LEGACY_APP_NAME
+        return current if current.exists() or not legacy.exists() else legacy
     root = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
-    return root / "job-agent"
+    current = root / "clover"
+    legacy = root / "job-agent"
+    return current if current.exists() or not legacy.exists() else legacy
 
 
 def database_path() -> Path:
-    return app_data_dir() / "job-agent.sqlite3"
+    data_dir = app_data_dir()
+    legacy = data_dir / "job-agent.sqlite3"
+    return legacy if legacy.exists() else data_dir / "clover.sqlite3"
 
 
 def documents_dir() -> Path:

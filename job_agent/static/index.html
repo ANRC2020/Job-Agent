@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Job Agent</title>
+  <title>Clover</title>
   <link rel="icon" type="image/png" href="/app-icon.png" />
   <style>
     :root {
@@ -103,14 +103,14 @@
   <div class="app">
     <header>
       <div>
-        <h1>Job Agent</h1>
-        <div class="hint" id="hint">Starting the model…</div>
+        <h1>Clover</h1>
+        <div class="hint" id="hint">Juno is starting…</div>
       </div>
       <button class="gear" id="open-settings" title="Settings" aria-label="Settings">⚙</button>
     </header>
     <div id="thread"></div>
     <form id="composer">
-      <textarea id="input" placeholder="Ask anything…" disabled></textarea>
+      <textarea id="input" placeholder="Ask Juno anything…" disabled></textarea>
       <button class="primary" id="send" type="submit" disabled>Send</button>
     </form>
   </div>
@@ -144,7 +144,7 @@
       ready = isReady;
       $input.disabled = !isReady;
       $send.disabled = !isReady;
-      $hint.textContent = isReady ? "Ready" : "Starting the model…";
+      $hint.textContent = isReady ? "Juno is ready" : "Juno is starting…";
       if (model) $custom.placeholder = model;
     }
 
@@ -214,7 +214,7 @@
       $input.value = "";
       thread.push({ role: "user", content: text });
       add("you", text);
-      add("agent", "Thinking…");
+      add("Juno", "Thinking…");
       const pending = $thread.lastChild;
       const res = await fetch("/api/chat", {
         method: "POST",

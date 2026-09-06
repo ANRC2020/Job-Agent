@@ -189,7 +189,7 @@ def _show_native_window(url: str) -> bool:
         return False
     apply_app_branding()
     window = webview.create_window(
-        "Job Agent",
+        "Clover",
         url,
         width=1100,
         height=760,
@@ -217,7 +217,7 @@ def serve(
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     apply_app_branding()
-    print(f"Job Agent is running at {url}", flush=True)
+    print(f"Clover is running at {url}", flush=True)
     session_holder: dict = {"session": None}
     boot: threading.Thread | None = None
 

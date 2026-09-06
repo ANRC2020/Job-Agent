@@ -53,7 +53,7 @@ def handle(request: dict[str, Any]) -> None:
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "job-agent", "version": "0.1.0"},
+                "serverInfo": {"name": "clover-juno", "version": "0.1.0"},
             },
         )
         return

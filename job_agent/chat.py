@@ -28,7 +28,7 @@ def _post(payload: dict[str, Any]) -> dict[str, Any]:
 def system_message() -> dict[str, str]:
     prompt = system_prompt_path().read_text(encoding="utf-8")
     extra = (
-        "\nYou are running inside the Job Agent desktop/CLI app. "
+        "\nYou are Juno, running inside the Clover desktop/CLI app. "
         "Use function tools when they can answer from this repository."
     )
     return {"role": "system", "content": prompt + extra}

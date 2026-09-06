@@ -4,8 +4,8 @@ from pathlib import Path
 
 from job_agent.paths import repo_root
 
-APP_NAME = "Job Agent"
-APP_ID = "app.jobagent.desktop"
+APP_NAME = "Clover"
+APP_ID = "app.clover.desktop"
 
 
 def icon_png() -> Path:
@@ -13,7 +13,7 @@ def icon_png() -> Path:
 
 
 def apply_app_branding() -> None:
-    """Make the running process look like Job Agent, not Python."""
+    """Make the running process look like Clover, not Python."""
     png = icon_png()
     if sys_is_macos():
         _brand_macos(png)

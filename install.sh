@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Job Agent. Bundles its own Python via uv — no system Python needed.
+# Install Clover. Bundles its own Python via uv — no system Python needed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -25,14 +25,14 @@ echo "==> Creating virtualenv"
 uv python install 3.12
 uv venv .venv --python 3.12 --allow-existing
 
-echo "==> Installing job-agent"
+echo "==> Installing Clover"
 uv pip install --python .venv/bin/python -e "$ROOT"
 
 echo "==> Running setup"
 ".venv/bin/job-agent" setup
 
 echo
-echo "Installed Job Agent to ~/Applications and your Desktop."
+echo "Installed Clover to ~/Applications and your Desktop."
 echo "Opening the app…"
 echo
 if [[ "${SKIP_APP:-}" == "1" ]]; then

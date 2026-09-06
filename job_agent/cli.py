@@ -17,19 +17,19 @@ from job_agent.storage import database_status, initialize_database
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="job-agent",
-        description="Job Agent CLI and desktop app.",
+        description="Clover CLI and desktop app.",
     )
     parser.add_argument("--version", action="version", version=f"job-agent {__version__}")
     sub = parser.add_subparsers(dest="cmd")
 
-    app_p = sub.add_parser("app", help="Open the Job Agent desktop window")
+    app_p = sub.add_parser("app", help="Open the Clover desktop window")
     app_p.add_argument("--port", type=int, default=None)
     app_p.add_argument("--no-window", action="store_true", help="Do not open a window (keep the server only)")
     app_p.add_argument("--no-runtime", action="store_true", help="Do not start or stop LM Studio")
 
     sub.add_parser("setup", help="Install or reuse LM Studio, Qwen, prompts, tools, and the desktop app")
-    sub.add_parser("install-desktop", help="Install the Job Agent app to Applications / Desktop")
-    sub.add_parser("launch", help="Open the installed Job Agent desktop app")
+    sub.add_parser("install-desktop", help="Install Clover to Applications / Desktop")
+    sub.add_parser("launch", help="Open the installed Clover desktop app")
     sub.add_parser("start", help="Start the LM Studio daemon, load Qwen, and serve the API")
     sub.add_parser("stop", help="Unload Qwen and stop the LM Studio server/daemon")
     sub.add_parser("status", help="Show LM Studio, model, and server status")
@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"[tool:{item['tool']}]")
             print(result["content"])
             return 0
-        print(f"Job Agent CLI chat ({load_config().model})")
+        print(f"Juno in Clover ({load_config().model})")
         print("Type a message, or /exit.")
         history: list[dict[str, str]] = []
         while True:
@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
             history.append({"role": "user", "content": line})
             result = complete(history)
             history.append({"role": "assistant", "content": result["content"]})
-            print(f"agent> {result['content']}")
+            print(f"Juno> {result['content']}")
         return 0
     if cmd == "app":
         serve(

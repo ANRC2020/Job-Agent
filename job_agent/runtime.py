@@ -67,7 +67,7 @@ def switch_model(model: str, log=print) -> RuntimeSession:
 
 
 def stop_runtime(session: RuntimeSession | None = None, log=print, *, full_shutdown: bool = True) -> None:
-    """Stop the Job Agent LLM mapping.
+    """Stop Clover's Juno LLM runtime.
 
     full_shutdown=True (desktop app): unload model, stop server, stop daemon.
     Otherwise only undo what this process started.

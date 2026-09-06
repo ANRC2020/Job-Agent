@@ -1,4 +1,4 @@
-# Install Job Agent. Bundles its own Python via uv — no system Python needed.
+# Install Clover. Bundles its own Python via uv — no system Python needed.
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
@@ -26,7 +26,7 @@ Write-Host "==> Creating virtualenv"
 & $Uv venv .venv --python 3.12 --allow-existing
 
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
-Write-Host "==> Installing job-agent"
+Write-Host "==> Installing Clover"
 & $Uv pip install --python $VenvPython -e $Root
 
 $JobAgent = Join-Path $Root ".venv\Scripts\job-agent.exe"
@@ -34,7 +34,7 @@ Write-Host "==> Running setup"
 & $JobAgent setup
 
 Write-Host ""
-Write-Host "Installed Job Agent to the Desktop and Start Menu."
+Write-Host "Installed Clover to the Desktop and Start Menu."
 Write-Host "Opening the app…"
 Write-Host ""
 if ($env:SKIP_APP -eq "1") { exit 0 }

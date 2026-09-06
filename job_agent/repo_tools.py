@@ -86,13 +86,13 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": tool_read_repo_file,
     },
     "get_system_prompt": {
-        "description": "Return the Job Agent system prompt shipped with this repo.",
+        "description": "Return Juno's system prompt shipped with Clover.",
         "schema": {"type": "object", "properties": {}},
         "handler": tool_get_system_prompt,
     },
     "describe_database": {
         "description": (
-            "Describe the local Job Agent database, including table purposes, fields, foreign keys, "
+            "Describe Clover's local database, including table purposes, fields, foreign keys, "
             "and behavioral rules. Use before writing an unfamiliar record or when deciding whether "
             "information is a source fact, job-process record, or derived learning. Pass a domain to "
             "reduce context; omit it only for a broad overview."

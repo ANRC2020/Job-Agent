@@ -76,7 +76,7 @@ def _install_desktop(log: Log) -> None:
 
 def run_setup(log: Log = print) -> None:
     cfg = load_config()
-    log("Job Agent setup")
+    log("Clover setup")
     database = initialize_database()
     if database["migrationsApplied"]:
         log(f"Installed local database at {database['path']}")
@@ -100,4 +100,4 @@ def run_setup(log: Log = print) -> None:
     ensure_prompt_and_mcp()
     log("Wrote system prompt and MCP config")
     install_desktop(log)
-    log("Setup complete. Open Job Agent from Applications, the Desktop, or: job-agent launch")
+    log("Setup complete. Open Clover from Applications, the Desktop, or: job-agent launch")

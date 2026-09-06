@@ -63,7 +63,7 @@ def venv_python() -> Path:
 def _mac_app_dir() -> Path:
     home_apps = Path.home() / "Applications"
     home_apps.mkdir(parents=True, exist_ok=True)
-    return home_apps / "Job Agent.app"
+    return home_apps / "Clover.app"
 
 
 def _write_mac_app(log) -> Path:
@@ -72,7 +72,7 @@ def _write_mac_app(log) -> Path:
     macos.mkdir(parents=True, exist_ok=True)
     root = repo_root()
     python = root / ".venv" / "bin" / "python"
-    launcher = macos / "Job Agent"
+    launcher = macos / "Clover"
     launcher.write_text(
         "\n".join(
             [
@@ -80,7 +80,7 @@ def _write_mac_app(log) -> Path:
                 "set -euo pipefail",
                 f'ROOT="{root}"',
                 'cd "$ROOT"',
-                f'exec -a "Job Agent" "{python}" -m job_agent app',
+                f'exec -a "Clover" "{python}" -m job_agent app',
                 "",
             ]
         ),
@@ -100,11 +100,11 @@ def _write_mac_app(log) -> Path:
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>Job Agent</string>
+  <string>Clover</string>
   <key>CFBundleDisplayName</key>
-  <string>Job Agent</string>
+  <string>Clover</string>
   <key>CFBundleIdentifier</key>
-  <string>app.jobagent.desktop</string>
+  <string>app.clover.desktop</string>
   <key>CFBundleVersion</key>
   <string>0.1.0</string>
   <key>CFBundleShortVersionString</key>
@@ -112,7 +112,7 @@ def _write_mac_app(log) -> Path:
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleExecutable</key>
-  <string>Job Agent</string>
+  <string>Clover</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleIconName</key>
@@ -130,27 +130,39 @@ def _write_mac_app(log) -> Path:
     )
     _install_desktop_alias(app, log)
     subprocess.run(["touch", str(app)], check=False)
-    log(f"Installed Mac app at {app}")
+    legacy_app = app.parent / "Job Agent.app"
+    if legacy_app.exists() and legacy_app != app:
+        shutil.rmtree(legacy_app, ignore_errors=True)
+    log(f"Installed Clover at {app}")
     return app
 
 
 def _install_desktop_alias(app: Path, log) -> None:
     desktop = Path.home() / "Desktop"
-    for name in ("Job Agent.app",):
+    subprocess.run(
+        [
+            "osascript",
+            "-e",
+            'tell application "Finder" to delete every item of desktop whose name starts with "Job Agent"',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    for name in ("Job Agent.app", "Clover.app"):
         path = desktop / name
         if path.exists() or path.is_symlink():
             try:
                 path.unlink()
             except OSError:
                 pass
-    if (desktop / "Job Agent").exists():
-        log("Desktop shortcut is named Job Agent")
+    if (desktop / "Clover").exists():
+        log("Desktop shortcut is named Clover")
         return
     script = f'''
 tell application "Finder"
   set theApp to POSIX file "{app}" as alias
   set newAlias to make alias file at desktop to theApp
-  set name of newAlias to "Job Agent"
+  set name of newAlias to "Clover"
   try
     set extension hidden of newAlias to true
   end try
@@ -160,7 +172,7 @@ end tell
     if result.returncode != 0:
         log((result.stderr or result.stdout).strip() or "Could not create Desktop alias")
     else:
-        log("Desktop shortcut is named Job Agent")
+        log("Desktop shortcut is named Clover")
 
 
 
@@ -186,19 +198,21 @@ $w = New-Object -ComObject WScript.Shell
 $desktop = [Environment]::GetFolderPath("Desktop")
 $start = Join-Path $env:APPDATA "Microsoft\\Windows\\Start Menu\\Programs"
 foreach ($dir in @($desktop, $start)) {
-  $lnk = Join-Path $dir "Job Agent.lnk"
+  $old = Join-Path $dir "Job Agent.lnk"
+  if (Test-Path $old) { Remove-Item $old -Force }
+  $lnk = Join-Path $dir "Clover.lnk"
   $s = $w.CreateShortcut($lnk)
   $s.TargetPath = $python
   $s.Arguments = "-m job_agent app"
   $s.WorkingDirectory = $root
   $s.WindowStyle = 1
-  $s.Description = "Job Agent"
+  $s.Description = "Clover — meet Juno, your local job assistant"
 """
         + icon_line
         + """
   $s.Save()
 }
-Write-Output (Join-Path $desktop "Job Agent.lnk")
+Write-Output (Join-Path $desktop "Clover.lnk")
 """
     )
     result = subprocess.run(
@@ -206,7 +220,7 @@ Write-Output (Join-Path $desktop "Job Agent.lnk")
         text=True,
         capture_output=True,
     )
-    path = (result.stdout or "").strip() or "Desktop\\Job Agent.lnk"
+    path = (result.stdout or "").strip() or "Desktop\\Clover.lnk"
     log(f"Installed Windows shortcuts: {path}")
     return Path(path)
 
@@ -229,7 +243,7 @@ def launch_desktop() -> None:
             subprocess.Popen(["open", str(app)])
             return
     if system == "Windows":
-        desktop = Path.home() / "Desktop" / "Job Agent.lnk"
+        desktop = Path.home() / "Desktop" / "Clover.lnk"
         if desktop.is_file():
             os.startfile(str(desktop))  # type: ignore[attr-defined]
             return
