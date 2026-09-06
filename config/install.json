@@ -1,0 +1,6 @@
+{
+  "model": "qwen/qwen3.5-9b",
+  "contextLength": 16384,
+  "installDesktopApp": true,
+  "mcpServerName": "job-agent"
+}

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/png" href="/app-icon.png" />
+  <style>
+    :root {
+      --bg: #14120f;
+      --panel: #1d1a16;
+      --line: #3a342c;
+      --ink: #f3ece3;
+      --muted: #b7aa9a;
+      --accent: #e2a15a;
+      --good: #8fbf88;
+      --bad: #d9897a;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      font: 15px/1.45 "Iowan Old Style", Palatino, "Palatino Linotype", serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    .shell {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      height: 100%;
+    }
+    aside {
+      border-right: 1px solid var(--line);
+      padding: 28px 22px;
+      background: var(--panel);
+    }
+    h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.03em; }
+    .tag { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+    .pill {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .ok { color: var(--good); }
+    .no { color: var(--bad); }
+    button {
+      width: 100%;
+      margin-top: 12px;
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary { background: var(--accent); color: #1a140c; border-color: var(--accent); }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    main { display: flex; flex-direction: column; height: 100%; }
+    #log {
+      max-height: 120px;
+      overflow: auto;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      padding: 0 28px;
+    }
+    #thread {
+      flex: 1;
+      overflow: auto;
+      padding: 28px;
+    }
+    .msg { margin: 0 0 18px; max-width: 46rem; }
+    .msg.user { margin-left: auto; color: var(--accent); }
+    .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    form {
+      display: flex;
+      gap: 8px;
+      padding: 18px 28px 24px;
+      border-top: 1px solid var(--line);
+    }
+    textarea {
+      flex: 1;
+      resize: none;
+      min-height: 54px;
+      background: var(--panel);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 12px;
+      font: inherit;
+    }
+    @media (max-width: 800px) {
+      .shell { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <h1>Job Agent</h1>
+      <div class="tag">Local Qwen via LM Studio</div>
+      <div id="status"></div>
+      <button id="setup">Run setup</button>
+      <button id="start">Start model</button>
+      <button class="primary" id="refresh">Refresh status</button>
+    </aside>
+    <main>
+      <div id="log"></div>
+      <div id="thread"></div>
+      <form id="composer">
+        <textarea id="input" placeholder="Ask the agent to use repo tools…"></textarea>
+        <button class="primary" type="submit" style="width:auto; align-self:flex-end;">Send</button>
+      </form>
+    </main>
+  </div>
+  <script>
+    const thread = [];
+    const $status = document.getElementById("status");
+    const $thread = document.getElementById("thread");
+    const $log = document.getElementById("log");
+    const $input = document.getElementById("input");
+
+    function pill(label, ok) {
+      return `<div class="pill"><span>${label}</span><span class="${ok ? "ok" : "no"}">${ok ? "ready" : "missing"}</span></div>`;
+    }
+
+    async function refresh() {
+      const data = await (await fetch("/api/status")).json();
+      $status.innerHTML = [
+        pill("LM Studio CLI", data.cliInstalled),
+        pill("Desktop app", data.desktopInstalled),
+        pill(data.model, data.modelDownloaded),
+        pill("Local server", data.serverRunning),
+        pill("Model loaded", data.modelLoaded),
+      ].join("");
+      return data;
+    }
+
+    function add(role, text) {
+      const div = document.createElement("div");
+      div.className = "msg " + role;
+      div.innerHTML = `<div class="who">${role}</div><div></div>`;
+      div.lastChild.textContent = text;
+      $thread.appendChild(div);
+      $thread.scrollTop = $thread.scrollHeight;
+    }
+
+    document.getElementById("refresh").onclick = refresh;
+    document.getElementById("setup").onclick = async () => {
+      $log.textContent = "Running setup…";
+      const res = await fetch("/api/setup", { method: "POST", body: "{}" });
+      const data = await res.json();
+      $log.textContent = (data.logs || [data.error]).join("\n");
+      await refresh();
+    };
+    document.getElementById("start").onclick = async () => {
+      $log.textContent = "Starting runtime…";
+      const res = await fetch("/api/start", { method: "POST", body: "{}" });
+      const data = await res.json();
+      $log.textContent = (data.logs || [data.error]).join("\n");
+      await refresh();
+    };
+    document.getElementById("composer").onsubmit = async (event) => {
+      event.preventDefault();
+      const text = $input.value.trim();
+      if (!text) return;
+      $input.value = "";
+      thread.push({ role: "user", content: text });
+      add("you", text);
+      add("agent", "Thinking…");
+      const pending = $thread.lastChild;
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: thread }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        pending.lastChild.textContent = data.error;
+        return;
+      }
+      const bits = (data.tools || []).map((t) => `[${t.tool}]`).join(" ");
+      pending.lastChild.textContent = (bits ? bits + "\n" : "") + (data.content || "");
+      thread.push({ role: "assistant", content: data.content || "" });
+    };
+
+    $input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        document.getElementById("composer").requestSubmit();
+      }
+    });
+
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>
