@@ -1,44 +1,31 @@
 # Job Agent
 
-Frictionless job applications — a local desktop app that runs Qwen through [LM Studio](https://lmstudio.ai/) and uses this repo’s tools.
+Frictionless job applications — a local desktop app that runs Qwen through [LM Studio](https://lmstudio.ai/).
 
 ## Install
-
-Clone the repo, then run the installer for your OS. The scripts skip LM Studio if it is already installed.
 
 ```bash
 git clone https://github.com/ANRC2020/Job-Agent.git
 cd Job-Agent
 ```
 
-### Mac
-
-- Installer: [install.sh](https://github.com/ANRC2020/Job-Agent/blob/main/install.sh)
-- Double-click: [install.command](https://github.com/ANRC2020/Job-Agent/blob/main/install.command)
+**Mac**
 
 ```bash
-chmod +x install.sh install.command
 ./install.sh
 ```
 
-That puts **Job Agent** in Applications and on the Desktop.
-
-### Windows
-
-- Installer: [install.ps1](https://github.com/ANRC2020/Job-Agent/blob/main/install.ps1)
-- Double-click: [install.bat](https://github.com/ANRC2020/Job-Agent/blob/main/install.bat)
+**Windows**
 
 ```powershell
 .\install.ps1
 ```
 
-That puts **Job Agent** on the Desktop and in the Start Menu.
-
-Python 3 is required. The installer creates a virtualenv, downloads Qwen if needed, and opens the app.
+That installs the desktop app, sets up LM Studio only if it is missing, and opens Job Agent. Python 3 is required.
 
 ## After install
 
-Opening Job Agent starts the LM Studio daemon, loads Qwen, and starts the local API. Closing the window unloads the model and stops that mapping.
+Opening the app starts Qwen. Closing it shuts that local model down.
 
 ```bash
 job-agent launch
