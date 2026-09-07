@@ -7,7 +7,7 @@ if errorlevel 1 (
   echo.
   echo Clover could not finish installing. The error above explains what failed.
   echo This window will stay open so you can share the message.
-  pause
+  if not defined CI pause
   exit /b 1
 )
 

@@ -41,7 +41,12 @@ Write-Host "==> Installing Clover"
 Invoke-Checked -FilePath $Uv -Arguments @("pip", "install", "--python", $VenvPython, "-e", $Root)
 
 Write-Host "==> Running setup"
-Invoke-Checked -FilePath $VenvPython -Arguments @("-m", "job_agent", "setup")
+if ($env:CLOVER_WINDOWS_SMOKE_TEST -eq "1") {
+    Write-Host "==> Windows smoke test: installing desktop integration without downloading a model"
+    Invoke-Checked -FilePath $VenvPython -Arguments @("-m", "job_agent", "install-desktop")
+} else {
+    Invoke-Checked -FilePath $VenvPython -Arguments @("-m", "job_agent", "setup")
+}
 
 Write-Host ""
 Write-Host "Installed Clover to the Desktop and Start Menu."

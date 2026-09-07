@@ -1,0 +1,41 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "install.cmd"
+      - "install.ps1"
+      - "pyproject.toml"
+      - "job_agent/**"
+      - "tests/windows_install_smoke.ps1"
+      - ".github/workflows/windows-install.yml"
+
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the same entry point users double-click
+        shell: cmd
+        env:
+          CLOVER_WINDOWS_SMOKE_TEST: "1"
+          SKIP_APP: "1"
+        run: install.cmd
+
+      - name: Verify console-free desktop integration
+        shell: powershell
+        run: .\tests\windows_install_smoke.ps1
+
+      - name: Verify the LM Studio Windows installer
+        shell: powershell
+        run: |
+          irm https://lmstudio.ai/install.ps1 | iex
+          $Lms = Join-Path $env:USERPROFILE ".lmstudio\bin\lms.exe"
+          if (-not (Test-Path $Lms)) {
+            throw "LM Studio installer did not create $Lms"
+          }
+          & $Lms --version
