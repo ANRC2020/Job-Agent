@@ -21,15 +21,13 @@ pkill -f "python.*job_agent" >/dev/null 2>&1 || true
 pkill -f "LM Studio" >/dev/null 2>&1 || true
 
 echo "==> Removing app/runtime installations (personal Clover data is preserved)"
+osascript -e 'tell application "Finder" to delete every item of desktop whose name starts with "Clover"' >/dev/null 2>&1 || true
 rm -rf \
   "$HOME/Applications/Clover.app" \
-  "$HOME/Desktop/Clover" \
-  "$HOME/Desktop/Clover.app" \
   "$HOME/.lmstudio" \
   "$ROOT/.venv"
-if [[ -w "/Applications" ]]; then
-  rm -rf "/Applications/LM Studio.app"
-else
+rm -rf "/Applications/LM Studio.app" 2>/dev/null || true
+if [[ -e "/Applications/LM Studio.app" ]]; then
   echo "Cannot remove /Applications/LM Studio.app without elevated access." >&2
   exit 3
 fi

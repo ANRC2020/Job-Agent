@@ -53,6 +53,11 @@ def _write_icns(png: Path, icns: Path, log) -> None:
             log(result.stderr.strip() or "iconutil failed; Finder may show a generic icon")
 
 
+def _powershell_literal(value: str) -> str:
+    """Quote a Windows path without doubling backslashes as Python repr does."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 def venv_python() -> Path:
     root = repo_root()
     if os.name == "nt":
@@ -185,13 +190,17 @@ def _write_windows_shortcuts(log) -> Path:
     ico = icon_ico()
     if png.is_file():
         _write_ico_from_png(png, ico)
-    icon_line = f"  $s.IconLocation = {repr(str(ico))}\n" if ico.is_file() else ""
+    icon_line = (
+        f"  $s.IconLocation = {_powershell_literal(str(ico))}\n"
+        if ico.is_file()
+        else ""
+    )
     script = (
         "$root = "
-        + repr(str(root))
+        + _powershell_literal(str(root))
         + "\n"
         "$python = "
-        + repr(str(pythonw))
+        + _powershell_literal(str(pythonw))
         + "\n"
         + """
 $w = New-Object -ComObject WScript.Shell
