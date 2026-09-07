@@ -1,4 +1,4 @@
-# Install Clover. Bundles its own Python via uv — no system Python needed.
+# Install Clover. Bundles its own Python via uv; no system Python needed.
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
@@ -50,7 +50,7 @@ if ($env:CLOVER_WINDOWS_SMOKE_TEST -eq "1") {
 
 Write-Host ""
 Write-Host "Installed Clover to the Desktop and Start Menu."
-Write-Host "Opening Clover — no terminal needs to stay open."
+Write-Host "Opening Clover; no terminal needs to stay open."
 Write-Host ""
 if ($env:SKIP_APP -eq "1") { exit 0 }
 $Pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
