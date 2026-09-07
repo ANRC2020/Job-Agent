@@ -57,19 +57,19 @@ def _run(
     )
 
 
-def lms(*args: str) -> subprocess.CompletedProcess[str]:
+def lms(*args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     binary = lms_bin()
     if binary is None:
         raise FileNotFoundError("lms is not installed")
-    return _run([str(binary), *args])
+    return _run([str(binary), *args], timeout=timeout)
 
 
-def lms_live(*args: str) -> subprocess.CompletedProcess[str]:
+def lms_live(*args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     """Run lms with visible progress for terminal-based installation."""
     binary = lms_bin()
     if binary is None:
         raise FileNotFoundError("lms is not installed")
-    return _run([str(binary), *args], capture_output=False)
+    return _run([str(binary), *args], capture_output=False, timeout=timeout)
 
 
 def downloaded_models() -> list[str]:

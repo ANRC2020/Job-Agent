@@ -107,7 +107,15 @@ def run_setup(log: Log = print) -> None:
                     f"Resuming model download (attempt {attempt}/{MODEL_DOWNLOAD_ATTEMPTS})"
                 )
             runner = lms_live if log is print else lms
-            got = runner("get", cfg.model, "--yes")
+            try:
+                got = runner("get", cfg.model, "--yes", timeout=600)
+            except subprocess.TimeoutExpired:
+                got = subprocess.CompletedProcess(
+                    args=["lms", "get", cfg.model],
+                    returncode=124,
+                    stdout="",
+                    stderr="Model download timed out.",
+                )
             if got.returncode == 0:
                 break
             if attempt < MODEL_DOWNLOAD_ATTEMPTS:
