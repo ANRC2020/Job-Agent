@@ -47,11 +47,12 @@ class StorageTests(unittest.TestCase):
                 "003_opportunity_context.sql",
                 "004_behavioral_learning.sql",
                 "005_browser_extension.sql",
+                "006_conversation_compaction.sql",
             ],
             first["migrationsApplied"],
         )
         self.assertEqual([], second["migrationsApplied"])
-        self.assertEqual(5, database_status()["schemaVersion"])
+        self.assertEqual(6, database_status()["schemaVersion"])
 
     def test_all_three_domains_are_installed(self) -> None:
         initialize_database()
@@ -75,6 +76,7 @@ class StorageTests(unittest.TestCase):
                 "learning",
                 "learning_evidence",
                 "preference_signal",
+                "conversation_summary",
             }.issubset(tables)
         )
 
@@ -213,7 +215,11 @@ class StorageTests(unittest.TestCase):
         result = initialize_database(target)
 
         self.assertEqual(
-            ["004_behavioral_learning.sql", "005_browser_extension.sql"],
+            [
+                "004_behavioral_learning.sql",
+                "005_browser_extension.sql",
+                "006_conversation_compaction.sql",
+            ],
             result["migrationsApplied"],
         )
         with sqlite3.connect(target) as upgraded:

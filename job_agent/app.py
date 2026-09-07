@@ -16,10 +16,12 @@ from urllib.parse import parse_qs, urlparse
 from job_agent import events, onboarding, opportunities, person
 from job_agent.autonomy import complete_approval, list_pending_actions, resolve_approval
 from job_agent.branding import apply_app_branding
+from job_agent.chat import ModelResponseTimeout
 from job_agent.chat import stream as chat_stream
+from job_agent.compaction import schedule_compaction
 from job_agent.config import load_config
 from job_agent.context import build_turn_context
-from job_agent.documents import save_document_base64, save_pasted_text
+from job_agent.documents import refresh_pdf_extractions, save_document_base64, save_pasted_text
 from job_agent.extension_api import (
     MAX_EXTENSION_BODY_BYTES,
     analyze_page,
@@ -46,7 +48,9 @@ from job_agent.storage import (
     add_tool_actions,
     ensure_thread,
     initialize_database,
+    latest_conversation_summary,
     list_messages,
+    list_messages_after,
     list_tool_actions,
     tool_action_status,
     touch_conversation,
@@ -117,12 +121,29 @@ def _serialized_chat(method):
 
 def _model_messages(thread_id: str) -> list[dict[str, str]]:
     """Rebuild the conversation from storage, so context survives restarts."""
-    history = list_messages(thread_id, limit=MAX_HISTORY_TURNS * 2)[-MAX_HISTORY_TURNS:]
-    return [
+    summary = latest_conversation_summary(thread_id)
+    if summary:
+        history = list_messages_after(
+            thread_id,
+            str(summary["source_end_message_id"]),
+            limit=2_000,
+        )[-MAX_HISTORY_TURNS:]
+    else:
+        history = list_messages(thread_id, limit=MAX_HISTORY_TURNS * 2)[-MAX_HISTORY_TURNS:]
+    messages = [
         {"role": str(item["role"]), "content": str(item["content"])[:MAX_TURN_CHARS]}
         for item in history
         if str(item["content"]).strip()
     ]
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+    normalized: list[dict[str, str]] = []
+    for message in messages:
+        if normalized and normalized[-1]["role"] == message["role"]:
+            normalized[-1]["content"] += "\n\n" + message["content"]
+        else:
+            normalized.append(message)
+    return normalized
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -420,6 +441,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def post_extension_analyze(self, payload: dict[str, Any]) -> None:
         identity = self._extension_identity()
+        if not self._juno_ready():
+            return
         self._json(
             analyze_page(
                 payload.get("page"),
@@ -430,6 +453,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def post_extension_suggest_fields(self, payload: dict[str, Any]) -> None:
         identity = self._extension_identity()
+        if not self._juno_ready():
+            return
         self._json(
             suggest_fields(
                 payload.get("page"),
@@ -466,8 +491,23 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- Juno's turn ------------------------------------------------------
 
+    def _juno_ready(self) -> bool:
+        state = readiness()
+        if state["ready"]:
+            return True
+        self._json(
+            {
+                "error": "Juno is still downloading. This feature will unlock automatically when she is ready.",
+                "readiness": state,
+            },
+            503,
+        )
+        return False
+
     @_serialized_chat
     def post_chat(self, payload: dict[str, Any]) -> None:
+        if not self._juno_ready():
+            return
         message = str(payload.get("message") or "").strip()
         opportunity_id = str(payload.get("opportunityId") or "").strip() or None
         if not message:
@@ -507,15 +547,22 @@ class Handler(BaseHTTPRequestHandler):
                 emit(event)
         except ClientGone:
             raise
+        except ModelResponseTimeout as exc:
+            print(f"Juno chat timeout: {exc}", file=sys.stderr, flush=True)
+            emit(
+                {
+                    "type": "error",
+                    "message": "Juno took too long to answer, so Clover stopped that attempt. Please try again.",
+                }
+            )
+            emit({"type": "end"})
+            return
         except Exception as exc:  # noqa: BLE001
             print(f"Juno chat error: {exc}", file=sys.stderr, flush=True)
             emit(
                 {
                     "type": "error",
-                    "message": (
-                        "Juno couldn't finish that thought. She may still be waking up — "
-                        "give it a moment and try again."
-                    ),
+                    "message": "Juno hit a local model error. Restart her from Settings and try again.",
                 }
             )
             emit({"type": "end"})
@@ -541,6 +588,7 @@ class Handler(BaseHTTPRequestHandler):
             add_tool_actions(thread_id, run_id, traces)
         else:
             touch_conversation(thread_id)
+        schedule_compaction(thread_id)
         emit(
             {
                 "type": "end",
@@ -672,6 +720,7 @@ def serve(
     manage_runtime: bool = True,
 ) -> None:
     initialize_database()
+    refresh_pdf_extractions()
     cfg = load_config()
     port = port or cfg.app_port
     httpd, port = _bind_server(port)

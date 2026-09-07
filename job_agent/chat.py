@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Iterator
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from job_agent.config import load_config
+from job_agent.config import MODEL_INSTANCE_ID, load_config
 from job_agent.lmstudio import wait_for_server
 from job_agent.paths import system_prompt_path
-from job_agent.reasoning import ThinkingFilter, strip_thinking
+from job_agent.reasoning import strip_thinking
 from job_agent.repo_tools import CHAT_TOOL_NAMES, call_tool, openai_tools
 from job_agent.storage import begin_turn
 
@@ -45,17 +47,24 @@ EMPTY_RESPONSE_RETRY = (
 EMPTY_RESPONSE_FALLBACK = (
     "I lost the thread for a moment. Please ask me that once more."
 )
+MODEL_REQUEST_TIMEOUT = 60
+MODEL_TURN_TIMEOUT = 90
+MAX_OUTPUT_TOKENS = 640
+
+
+class ModelResponseTimeout(TimeoutError):
+    """The local model exceeded Clover's bounded response window."""
 
 
 def activity_for(tool_name: str) -> str:
     return TOOL_ACTIVITY.get(tool_name, "Checking something")
 
 
-def _request(payload: dict[str, Any], *, stream: bool) -> Request:
+def _request(payload: dict[str, Any]) -> Request:
     cfg = load_config()
-    body = json.dumps({**payload, "stream": stream}).encode("utf-8")
+    body = json.dumps(payload).encode("utf-8")
     return Request(
-        cfg.api_base.rstrip("/") + "/chat/completions",
+        cfg.api_base.rstrip("/").removesuffix("/v1") + "/v1/responses",
         data=body,
         headers={
             "Content-Type": "application/json",
@@ -65,28 +74,28 @@ def _request(payload: dict[str, Any], *, stream: bool) -> Request:
     )
 
 
-def _post(payload: dict[str, Any]) -> dict[str, Any]:
+def _post(payload: dict[str, Any], *, timeout: float = MODEL_REQUEST_TIMEOUT) -> dict[str, Any]:
     if not wait_for_server(120):
         raise ConnectionError("Juno's local engine did not finish starting.")
-    with urlopen(_request(payload, stream=False), timeout=300) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _post_stream(payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    if not wait_for_server(120):
-        raise ConnectionError("Juno's local engine did not finish starting.")
-    with urlopen(_request(payload, stream=True), timeout=600) as resp:
-        for raw in resp:
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line.startswith("data:"):
+    deadline = time.monotonic() + timeout
+    for attempt in range(2):
+        try:
+            with urlopen(
+                _request(payload),
+                timeout=max(1, deadline - time.monotonic()),
+            ) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            if attempt == 0 and exc.code >= 500 and "model unloaded" in detail.lower():
+                time.sleep(0.5)
                 continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                return
-            try:
-                yield json.loads(data)
-            except json.JSONDecodeError:
-                continue
+            raise RuntimeError(f"LM Studio rejected Juno's request: {detail[:500]}") from exc
+        except TimeoutError as exc:
+            raise ModelResponseTimeout(
+                "Juno took too long to answer, so Clover stopped that attempt."
+            ) from exc
+    raise RuntimeError("LM Studio could not keep Juno's model loaded.")
 
 
 def system_message(context: str = "") -> dict[str, str]:
@@ -98,40 +107,119 @@ def system_message(context: str = "") -> dict[str, str]:
 
 
 def _payload(messages: list[dict[str, Any]], tool_names: tuple[str, ...] | None) -> dict[str, Any]:
-    cfg = load_config()
     payload: dict[str, Any] = {
-        "model": cfg.model,
-        "messages": messages,
+        # Address the exact instance Clover loaded at its bounded context size.
+        # Using the catalog key lets LM Studio silently auto-load a second,
+        # default-context instance.
+        "model": MODEL_INSTANCE_ID,
+        "input": messages,
         "temperature": 0.4,
+        "reasoning": {"effort": "none"},
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "stream": False,
+        "store": False,
     }
     tools = openai_tools(tool_names) if tool_names else []
     if tools:
-        payload["tools"] = tools
+        payload["tools"] = [
+            {"type": "function", **tool["function"]}
+            for tool in tools
+        ]
     return payload
 
 
+def _response_content(data: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for item in data.get("output") or []:
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if content.get("type") == "output_text" and content.get("text"):
+                parts.append(str(content["text"]))
+    return strip_thinking("".join(parts)).strip()
+
+
+def _response_calls(data: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(item.get("call_id") or item.get("id") or item.get("name") or ""),
+            "name": str(item.get("name") or ""),
+            "arguments": str(item.get("arguments") or "{}"),
+            "item": item,
+        }
+        for item in data.get("output") or []
+        if item.get("type") == "function_call" and item.get("name")
+    ]
+
+
+def _needs_resume_context(messages: list[dict[str, Any]]) -> bool:
+    latest = next(
+        (
+            str(message.get("content") or "").lower()
+            for message in reversed(messages)
+            if message.get("role") == "user"
+        ),
+        "",
+    )
+    return any(
+        phrase in latest
+        for phrase in (
+            "resume",
+            "résumé",
+            "my background",
+            "my experience",
+            "my skills",
+            "who am i",
+            "who i am",
+            "about me",
+        )
+    )
+
+
+def _preload_resume(
+    messages: list[dict[str, Any]],
+    traces: list[dict[str, Any]],
+    tool_names: tuple[str, ...] | None,
+) -> tuple[str, ...] | None:
+    if (
+        not tool_names
+        or "read_my_document" not in tool_names
+        or not _needs_resume_context(messages)
+    ):
+        return tool_names
+    _run_calls(
+        [
+            {
+                "id": "clover-resume-context",
+                "name": "read_my_document",
+                "arguments": '{"kind":"resume"}',
+            }
+        ],
+        messages,
+        traces,
+    )
+    return tuple(name for name in tool_names if name != "read_my_document")
+
+
 def _run_calls(
-    calls: list[dict[str, str]],
+    calls: list[dict[str, Any]],
     messages: list[dict[str, Any]],
     traces: list[dict[str, Any]],
     said: str = "",
     opportunity_id: str | None = None,
 ) -> None:
-    messages.append(
-        {
-            "role": "assistant",
-            "content": said or None,
-            "tool_calls": [
-                {
-                    "id": call["id"] or call["name"],
-                    "type": "function",
-                    "function": {"name": call["name"], "arguments": call["arguments"] or "{}"},
-                }
-                for call in calls
-            ],
-        }
-    )
+    if said:
+        messages.append({"role": "assistant", "content": said})
     for call in calls:
+        messages.append(
+            call.get("item")
+            or {
+                "type": "function_call",
+                "call_id": call["id"] or call["name"],
+                "name": call["name"],
+                "arguments": call["arguments"] or "{}",
+            }
+        )
         try:
             arguments = json.loads(call["arguments"] or "{}")
         except json.JSONDecodeError:
@@ -163,9 +251,9 @@ def _run_calls(
         )
         messages.append(
             {
-                "role": "tool",
-                "tool_call_id": call["id"] or call["name"],
-                "content": result,
+                "type": "function_call_output",
+                "call_id": call["id"] or call["name"],
+                "output": result,
             }
         )
 
@@ -184,34 +272,27 @@ def complete(
     traces: list[dict[str, Any]] = []
     spoken: list[str] = []
     retried_empty = False
+    tool_names = _preload_resume(messages, traces, tool_names)
+    deadline = time.monotonic() + MODEL_TURN_TIMEOUT
     for _ in range(max_tool_rounds):
-        data = _post(_payload(messages, tool_names))
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        content = strip_thinking(message.get("content") or "")
-        raw_calls = message.get("tool_calls") or []
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ModelResponseTimeout("Juno's turn exceeded Clover's time limit.")
+        data = _post(
+            _payload(messages, tool_names),
+            timeout=min(MODEL_REQUEST_TIMEOUT, remaining),
+        )
+        content = _response_content(data)
+        calls = _response_calls(data)
         if content:
             spoken.append(content)
-        if not raw_calls:
+        if not calls:
             if not content and not retried_empty:
                 retried_empty = True
                 messages.append({"role": "system", "content": EMPTY_RESPONSE_RETRY})
                 continue
             break
-        _run_calls(
-            [
-                {
-                    "id": str(call.get("id") or ""),
-                    "name": str((call.get("function") or {}).get("name") or ""),
-                    "arguments": str((call.get("function") or {}).get("arguments") or "{}"),
-                }
-                for call in raw_calls
-            ],
-            messages,
-            traces,
-            content,
-            opportunity_id,
-        )
+        _run_calls(calls, messages, traces, content, opportunity_id)
     content = "\n\n".join(spoken).strip() or EMPTY_RESPONSE_FALLBACK
     return {"content": content, "tools": traces, "model": cfg.model}
 
@@ -231,45 +312,31 @@ def stream(
     traces: list[dict[str, Any]] = []
     spoken: list[str] = []
     retried_empty = False
+    should_preload = bool(
+        tool_names
+        and "read_my_document" in tool_names
+        and _needs_resume_context(messages)
+    )
+    if should_preload:
+        yield {"type": "activity", "text": activity_for("read_my_document")}
+    tool_names = _preload_resume(messages, traces, tool_names)
+    deadline = time.monotonic() + MODEL_TURN_TIMEOUT
 
     for _ in range(max_tool_rounds):
-        parts: list[str] = []
-        pending: dict[int, dict[str, str]] = {}
-        announced_thinking = False
-        thinking = ThinkingFilter()
-
-        for chunk in _post_stream(_payload(messages, tool_names)):
-            delta = ((chunk.get("choices") or [{}])[0].get("delta")) or {}
-            raw = delta.get("content")
-            if raw:
-                text = thinking.feed(raw)
-                if text:
-                    parts.append(text)
-                    yield {"type": "delta", "text": text}
-            if (thinking.thinking or delta.get("reasoning_content")) and not announced_thinking:
-                announced_thinking = True
-                yield {"type": "activity", "text": "Thinking it through"}
-            for call in delta.get("tool_calls") or []:
-                entry = pending.setdefault(
-                    int(call.get("index") or 0),
-                    {"id": "", "name": "", "arguments": ""},
-                )
-                if call.get("id"):
-                    entry["id"] = str(call["id"])
-                function = call.get("function") or {}
-                if function.get("name"):
-                    entry["name"] = str(function["name"])
-                if function.get("arguments"):
-                    entry["arguments"] += str(function["arguments"])
-
-        tail = thinking.flush()
-        if tail:
-            parts.append(tail)
-            yield {"type": "delta", "text": tail}
-        joined = "".join(parts).strip()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ModelResponseTimeout("Juno's turn exceeded Clover's time limit.")
+        yield {"type": "activity", "text": "Putting that together"}
+        data = _post(
+            _payload(messages, tool_names),
+            timeout=min(MODEL_REQUEST_TIMEOUT, remaining),
+        )
+        joined = _response_content(data)
+        calls = _response_calls(data)
         if joined:
             spoken.append(joined)
-        if not pending:
+            yield {"type": "delta", "text": joined}
+        if not calls:
             if not joined and not retried_empty:
                 retried_empty = True
                 messages.append({"role": "system", "content": EMPTY_RESPONSE_RETRY})
@@ -277,9 +344,6 @@ def stream(
                 continue
             break
 
-        calls = [pending[index] for index in sorted(pending) if pending[index]["name"]]
-        if not calls:
-            break
         for call in calls:
             yield {"type": "activity", "text": activity_for(call["name"])}
         _run_calls(calls, messages, traces, joined, opportunity_id)

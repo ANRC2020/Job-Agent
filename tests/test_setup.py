@@ -26,7 +26,7 @@ class SetupTests(unittest.TestCase):
     @patch("job_agent.setup.ensure_prompt_and_mcp")
     @patch("job_agent.setup.time.sleep")
     @patch(
-        "job_agent.setup.lms_live",
+        "job_agent.setup.lms_stream",
         side_effect=[
             completed(1, stderr="Timed-out"),
             completed(0, stdout="Download complete"),

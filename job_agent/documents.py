@@ -14,6 +14,11 @@ import zlib
 from io import BytesIO
 from typing import Any
 
+try:
+    from pypdf import PdfReader
+except ImportError:  # The dependency-free parser still supports simple PDFs.
+    PdfReader = None  # type: ignore[assignment,misc]
+
 from job_agent.storage import (
     DEFAULT_PERSON_ID,
     add_progress_event,
@@ -117,7 +122,7 @@ def _pdf_text_from_stream(content: str) -> str:
     return "\n".join(line for line in lines if line.strip())
 
 
-def _from_pdf(data: bytes) -> str:
+def _from_pdf_fallback(data: bytes) -> str:
     chunks: list[str] = []
     for match in re.finditer(rb"stream\r?\n?(.*?)endstream", data, re.DOTALL):
         raw = match.group(1)
@@ -135,6 +140,27 @@ def _from_pdf(data: bytes) -> str:
         if extracted:
             chunks.append(extracted)
     return _clean("\n".join(chunks))
+
+
+def _from_pdf(data: bytes) -> str:
+    """Extract using the PDF font map; fall back for tiny synthetic PDFs.
+
+    Reading raw content streams treats custom font glyph codes as characters,
+    which can turn an otherwise valid resume into convincing-looking garbage.
+    """
+    try:
+        if PdfReader is None:
+            raise ImportError
+        pages = [
+            page.extract_text(extraction_mode="layout") or ""
+            for page in PdfReader(BytesIO(data)).pages
+        ]
+        text = _clean("\n".join(pages))
+        if text:
+            return text
+    except Exception:  # noqa: BLE001 - the dependency-free fallback is intentional
+        pass
+    return _from_pdf_fallback(data)
 
 
 def extract_text(filename: str, data: bytes) -> str:
@@ -188,8 +214,12 @@ def save_document(
             document_id = str(existing["id"])
             version = int(existing["version"])
             connection.execute(
-                "UPDATE person_document SET status = 'active', updated_at = ? WHERE id = ?",
-                (now, document_id),
+                """
+                UPDATE person_document
+                SET status = 'active', text_content = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (text or None, now, document_id),
             )
         else:
             version_row = connection.execute(
@@ -250,6 +280,39 @@ def save_document(
             )
         ),
     }
+
+
+def refresh_pdf_extractions(person_id: str = DEFAULT_PERSON_ID) -> int:
+    """Repair text saved by Clover's former raw PDF stream parser."""
+    initialize_database()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, storage_uri, text_content
+            FROM person_document
+            WHERE person_id = ? AND lower(filename) LIKE '%.pdf'
+            """,
+            (person_id,),
+        ).fetchall()
+    repaired: list[tuple[str, str]] = []
+    for row in rows:
+        try:
+            data = BytesIO()
+            with open(str(row["storage_uri"]), "rb") as source:
+                data.write(source.read())
+            text = _from_pdf(data.getvalue())
+        except (OSError, ValueError):
+            continue
+        if len(text) >= MIN_USEFUL_CHARS and text != str(row["text_content"] or ""):
+            repaired.append((text, str(row["id"])))
+    if repaired:
+        now = utc_now()
+        with transaction() as connection:
+            connection.executemany(
+                "UPDATE person_document SET text_content = ?, updated_at = ? WHERE id = ?",
+                [(text, now, document_id) for text, document_id in repaired],
+            )
+    return len(repaired)
 
 
 def save_document_base64(

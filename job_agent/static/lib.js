@@ -205,8 +205,8 @@ export async function sendToJuno({ message, opportunityId, handlers, signal }) {
     signal,
   });
   if (!response.ok || !response.body) {
-    handlers.onError?.("Juno couldn't be reached just now.");
-    return;
+    const problem = await response.json().catch(() => ({}));
+    throw new Error(problem.error || "Juno couldn't be reached just now.");
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

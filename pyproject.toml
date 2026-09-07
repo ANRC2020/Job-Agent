@@ -9,7 +9,7 @@ description = "Clover desktop app with Juno, a local job-search assistant powere
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Clover" }]
-dependencies = ["pywebview>=5.0"]
+dependencies = ["pywebview>=5.0", "pypdf>=5.0"]
 
 [project.scripts]
 job-agent = "job_agent.cli:main"

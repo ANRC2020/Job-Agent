@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from job_agent.download_progress import snapshot as download_status
 from job_agent.lmstudio import status
 from job_agent.storage import database_status
 
@@ -67,16 +68,20 @@ def readiness(*, attempts: int = 0) -> dict[str, Any]:
     if state == "starting" and attempts >= 12:
         state = "stalled"
     message = MESSAGES[state]
+    download = download_status()
+    active_download = state == "installing" and bool(download.get("active"))
+    recovery = None if active_download else message["recovery"]
     return {
         "state": state,
         "ready": state == "ready",
         "headline": message["headline"],
         "detail": message["detail"],
         "recovery": (
-            {"action": message["recovery"], "label": RECOVERY_LABELS[message["recovery"]]}
-            if message["recovery"]
+            {"action": recovery, "label": RECOVERY_LABELS[recovery]}
+            if recovery
             else None
         ),
+        "download": download if state == "installing" else None,
         "canTypeAhead": state in {"starting", "installing", "stalled"},
     }
 

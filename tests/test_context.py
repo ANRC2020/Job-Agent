@@ -131,6 +131,19 @@ class ScopedContextTests(unittest.TestCase):
         )
         save_pasted_text(text=resume)
         thread_id = opportunities.thread_id(self.save("alpha"))
+        run_id = add_model_run(provider="lm-studio", model="test", output={})
+        add_tool_actions(
+            thread_id,
+            run_id,
+            [
+                {
+                    "tool": "read_my_document",
+                    "activity": "Reading your resume",
+                    "arguments": {},
+                    "result": "CORRUPTED HISTORICAL RESUME TEXT",
+                }
+            ],
+        )
 
         block = build_turn_context(
             conversation_id=thread_id,
@@ -139,6 +152,7 @@ class ScopedContextTests(unittest.TestCase):
 
         self.assertIn("pasted-resume.txt", block)
         self.assertIn("Built onboarding guides", block)
+        self.assertNotIn("CORRUPTED HISTORICAL RESUME TEXT", block)
 
 
 if __name__ == "__main__":

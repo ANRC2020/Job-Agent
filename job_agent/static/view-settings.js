@@ -214,12 +214,25 @@ export function openSettings() {
 
     // Advanced
     const models = engineState.availableModels || [];
-    const select = el("select", {}, [
-      ...models.map((name) => el("option", { value: name, selected: name === engineState.model, text: name })),
-      models.includes(engineState.model)
-        ? null
-        : el("option", { value: engineState.model, selected: true, text: engineState.model }),
-    ]);
+    const modelOptions = [
+      ...new Set([...(engineState.recommendedModels || []), ...models, engineState.model]),
+    ];
+    const modelLabel = (name) => {
+      if (name === "qwen/qwen3.5-4b") return "Qwen3.5 4B — faster";
+      if (name === "qwen/qwen3.5-9b") return "Qwen3.5 9B — higher quality";
+      return name;
+    };
+    const select = el(
+      "select",
+      {},
+      modelOptions.map((name) =>
+        el("option", {
+          value: name,
+          selected: name === engineState.model,
+          text: modelLabel(name),
+        })
+      )
+    );
     body.append(
       el(
         "details",

@@ -5,6 +5,13 @@ from dataclasses import dataclass
 
 from job_agent.paths import repo_root
 
+DEFAULT_MODEL = "qwen/qwen3.5-4b"
+MODEL_INSTANCE_ID = "clover-juno"
+RECOMMENDED_MODELS = (
+    DEFAULT_MODEL,
+    "qwen/qwen3.5-9b",
+)
+
 
 @dataclass(frozen=True)
 class InstallConfig:
@@ -30,7 +37,7 @@ def load_raw() -> dict:
 def load_config() -> InstallConfig:
     raw = load_raw()
     return InstallConfig(
-        model=str(raw.get("model") or "qwen/qwen3.5-9b"),
+        model=str(raw.get("model") or DEFAULT_MODEL),
         context_length=int(raw.get("contextLength") or 16384),
         install_desktop_app=bool(raw.get("installDesktopApp", True)),
         mcp_server_name=str(raw.get("mcpServerName") or "job-agent"),

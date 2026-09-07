@@ -424,6 +424,11 @@ h3 { font: 600 14.5px/1.4 var(--sans); }
   transition: border-color 0.15s ease;
 }
 .composer:focus-within { border-color: var(--clover); }
+.composer.is-locked {
+  border-color: var(--line);
+  background: var(--surface-2);
+  opacity: 0.72;
+}
 
 .composer textarea {
   flex: 1;
@@ -469,6 +474,30 @@ h3 { font: 600 14.5px/1.4 var(--sans); }
   font-size: 13.5px;
 }
 .notice .btn { background: transparent; }
+.notice > .stack { flex: 1; }
+.model-download { width: min(360px, 100%); margin-top: 6px; }
+.model-download-track {
+  position: relative;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--amber) 18%, var(--surface));
+}
+.model-download-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--clover);
+  transition: width 0.35s ease;
+}
+.model-download-track.is-indeterminate .model-download-fill {
+  position: absolute;
+  width: 34%;
+  animation: model-download 1.3s ease-in-out infinite;
+}
+@keyframes model-download {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(320%); }
+}
 
 .empty {
   padding: 30px 0 6px;

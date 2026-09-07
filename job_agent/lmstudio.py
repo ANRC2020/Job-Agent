@@ -5,13 +5,14 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from job_agent.config import load_config
+from job_agent.config import RECOMMENDED_MODELS, load_config
 from job_agent.paths import lmstudio_home, repo_root, system_prompt_path, venv_python
 
 
@@ -72,6 +73,67 @@ def lms_live(*args: str, timeout: float | None = None) -> subprocess.CompletedPr
     return _run([str(binary), *args], capture_output=False, timeout=timeout)
 
 
+def lms_stream(
+    *args: str,
+    on_output,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Stream carriage-return progress from lms while retaining a bounded transcript."""
+    binary = lms_bin()
+    if binary is None:
+        raise FileNotFoundError("lms is not installed")
+    env = os.environ.copy()
+    env["PATH"] = str(lmstudio_home() / "bin") + os.pathsep + env.get("PATH", "")
+    process = subprocess.Popen(
+        [str(binary), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        bufsize=0,
+    )
+    transcript: list[str] = []
+
+    def read_output() -> None:
+        assert process.stdout is not None
+        buffer = ""
+        while True:
+            character = process.stdout.read(1)
+            if character == "":
+                if buffer:
+                    on_output(buffer)
+                    transcript.append(buffer)
+                return
+            if character in "\r\n":
+                if buffer:
+                    on_output(buffer)
+                    transcript.append(buffer)
+                    if len(transcript) > 200:
+                        del transcript[:100]
+                    buffer = ""
+            else:
+                buffer += character
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        reader.join(timeout=2)
+        raise
+    reader.join(timeout=2)
+    return subprocess.CompletedProcess(
+        args=[str(binary), *args],
+        returncode=returncode,
+        stdout="\n".join(transcript),
+        stderr="",
+    )
+
+
 def downloaded_models() -> list[str]:
     if lms_bin() is None:
         return []
@@ -84,6 +146,32 @@ def downloaded_models() -> list[str]:
         if "/" in token and token not in names:
             names.append(token.split("(")[0])
     return names
+
+
+def loaded_context_length(model: str) -> int | None:
+    if lms_bin() is None:
+        return None
+    result = lms("ps", "--json")
+    if result.returncode != 0:
+        return None
+    try:
+        models = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    for item in models if isinstance(models, list) else []:
+        identifiers = {
+            str(item.get("identifier") or ""),
+            str(item.get("modelKey") or ""),
+            str(item.get("indexedModelIdentifier") or ""),
+        }
+        if model in identifiers or any(
+            identifier.split("/")[-1] == model.split("/")[-1]
+            for identifier in identifiers
+            if identifier
+        ):
+            value = item.get("contextLength")
+            return int(value) if value is not None else None
+    return None
 
 
 def server_reachable() -> bool:
@@ -130,6 +218,7 @@ def status() -> dict[str, Any]:
         "desktopInstalled": desktop_installed(),
         "model": cfg.model,
         "availableModels": downloaded_models() if binary is not None else [],
+        "recommendedModels": list(RECOMMENDED_MODELS),
         "modelDownloaded": bool(models),
         "daemonRunning": daemon,
         "serverRunning": server_reachable(),

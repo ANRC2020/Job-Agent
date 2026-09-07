@@ -4,6 +4,8 @@ const elements = Object.fromEntries(
 let page = null;
 let permissionOrigin = null;
 let captureTimer = null;
+let junoReady = false;
+let paired = false;
 
 async function message(type, extra = {}) {
   const response = await chrome.runtime.sendMessage({ type, ...extra });
@@ -21,6 +23,7 @@ function notice(text = "", error = false) {
 }
 
 function busy(button, value) {
+  button.dataset.busy = value ? "true" : "false";
   button.disabled = value;
 }
 
@@ -28,14 +31,31 @@ function setConnected(connected, ready = false) {
   elements.connection.textContent = connected ? (ready ? "Ready" : "Starting") : "Not paired";
 }
 
-async function refreshStatus() {
+function applyJunoGate() {
+  elements.analyze.disabled = !junoReady || elements.analyze.dataset.busy === "true";
+  elements.fill.disabled = !junoReady || elements.fill.dataset.busy === "true";
+  elements.question.disabled = !junoReady;
+  const chatButton = elements["chat-form"].querySelector("button");
+  chatButton.disabled = !junoReady || chatButton.dataset.busy === "true";
+}
+
+async function refreshStatus({ capturePage = false } = {}) {
   try {
     const status = await message("STATUS");
-    const paired = Boolean(status.paired && status.hasToken);
+    const wasPaired = paired;
+    paired = Boolean(status.paired && status.hasToken);
+    junoReady = Boolean(status.readiness?.ready);
     setConnected(paired, Boolean(status.readiness?.ready));
     show(elements.pairing, !paired);
-    if (paired) await capture();
+    if (paired && (capturePage || !wasPaired)) await capture();
+    applyJunoGate();
+    if (paired && !junoReady) {
+      notice("Juno is downloading. Analysis and answer generation will unlock automatically.");
+    }
   } catch (error) {
+    paired = false;
+    junoReady = false;
+    applyJunoGate();
     setConnected(false);
     show(elements.pairing);
     notice(error.message, true);
@@ -87,6 +107,7 @@ async function withButton(button, action) {
     notice(error.message, true);
   } finally {
     busy(button, false);
+    applyJunoGate();
   }
 }
 
@@ -96,7 +117,7 @@ elements["pair-form"].addEventListener("submit", (event) => {
     await message("PAIR", { code: elements["pair-code"].value });
     elements["pair-code"].value = "";
     notice("Browser paired.");
-    await refreshStatus();
+    await refreshStatus({ capturePage: true });
   });
 });
 
@@ -115,6 +136,7 @@ elements["allow-site"].addEventListener("click", async () => {
 });
 
 elements.analyze.addEventListener("click", () => {
+  if (!junoReady) return;
   withButton(elements.analyze, async () => {
     const result = await message("ANALYZE_PAGE", { page });
     elements.response.textContent = result.content;
@@ -131,6 +153,7 @@ elements.save.addEventListener("click", () => {
 });
 
 elements.fill.addEventListener("click", () => {
+  if (!junoReady) return;
   withButton(elements.fill, async () => {
     const generated = await message("SUGGEST_FIELDS", {
       page,
@@ -161,7 +184,7 @@ elements.undo.addEventListener("click", async () => {
 elements["chat-form"].addEventListener("submit", (event) => {
   event.preventDefault();
   const question = elements.question.value.trim();
-  if (!question || !page) return;
+  if (!question || !page || !junoReady) return;
   withButton(elements["chat-form"].querySelector("button"), async () => {
     const result = await message("ANALYZE_PAGE", { page, question });
     elements.response.textContent = result.content;
@@ -177,4 +200,6 @@ chrome.runtime.onMessage.addListener((incoming) => {
   captureTimer = setTimeout(capture, 500);
 });
 
-refreshStatus();
+applyJunoGate();
+refreshStatus({ capturePage: true });
+setInterval(() => refreshStatus(), 2500);

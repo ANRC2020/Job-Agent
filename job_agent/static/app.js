@@ -102,6 +102,12 @@ async function refreshCounts() {
 let attempts = 0;
 let watching = false;
 
+function publishReadiness(state) {
+  const ready = Boolean(state?.ready);
+  document.documentElement.dataset.junoReady = ready ? "true" : "false";
+  window.dispatchEvent(new CustomEvent("juno-readiness", { detail: state || { ready: false } }));
+}
+
 function showNotice(state) {
   clear(notice);
   // A block slot, so the banner inside spans the width instead of shrinking to
@@ -127,6 +133,37 @@ function showNotice(state) {
     });
     actions.append(button);
   }
+  const progress = state.download;
+  const percentage = Number.isFinite(Number(progress?.percent))
+    ? Math.max(0, Math.min(100, Number(progress.percent)))
+    : null;
+  const meter = progress?.active
+    ? el(
+        "div",
+        { class: "model-download stack", style: "gap: 5px" },
+        el(
+          "div",
+          {
+            class: `model-download-track${percentage === null ? " is-indeterminate" : ""}`,
+            role: "progressbar",
+            "aria-label": "Downloading Juno",
+            "aria-valuemin": "0",
+            "aria-valuemax": "100",
+            "aria-valuenow": percentage === null ? null : String(Math.round(percentage)),
+          },
+          el("div", {
+            class: "model-download-fill",
+            style: percentage === null ? null : `width: ${percentage}%`,
+          })
+        ),
+        el("div", {
+          class: "small muted",
+          text: percentage === null
+            ? (progress.detail || "Preparing the download…")
+            : `${Math.round(percentage)}% downloaded`,
+        })
+      )
+    : null;
   notice.append(
     el(
       "div",
@@ -136,7 +173,8 @@ function showNotice(state) {
         "div",
         { class: "stack", style: "gap: 2px" },
         el("strong", { text: state.headline }),
-        state.detail ? el("div", { class: "small muted", text: state.detail }) : null
+        state.detail ? el("div", { class: "small muted", text: state.detail }) : null,
+        meter
       ),
       el("div", { class: "spacer" }),
       actions
@@ -155,12 +193,18 @@ async function watchReadiness() {
       state = null;
     }
     if (state?.ready) {
+      publishReadiness(state);
       notice.style.display = "none";
       clear(notice);
       watching = false;
       return;
     }
-    if (state) showNotice(state);
+    if (state) {
+      publishReadiness(state);
+      showNotice(state);
+    } else {
+      publishReadiness({ ready: false });
+    }
     attempts += 1;
     await new Promise((resolve) => setTimeout(resolve, 2500));
   }
@@ -204,6 +248,7 @@ async function render() {
 
 async function boot() {
   const bootstrap = await api.get("/api/bootstrap");
+  publishReadiness(bootstrap.readiness);
   if (!bootstrap.onboarding.complete) {
     shell.className = "";
     renderOnboarding(shell, {

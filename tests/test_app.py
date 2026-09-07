@@ -9,11 +9,26 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest.mock import patch
 
-from job_agent.app import _bind_server
+from job_agent.app import _bind_server, _model_messages
 from job_agent.storage import initialize_database
 
 
 class AppApiTests(unittest.TestCase):
+    @patch("job_agent.app.list_messages")
+    def test_model_history_starts_with_user_and_alternates_roles(self, messages) -> None:
+        messages.return_value = [
+            {"role": "assistant", "content": "orphaned reply"},
+            {"role": "user", "content": "first failed request"},
+            {"role": "user", "content": "second request"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "sure"},
+        ]
+
+        history = _model_messages("thread")
+
+        self.assertEqual(["user", "assistant", "user"], [item["role"] for item in history])
+        self.assertIn("first failed request\n\nsecond request", history[0]["content"])
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, {"JOB_AGENT_DATA_DIR": self.temp_dir.name})
@@ -45,7 +60,8 @@ class AppApiTests(unittest.TestCase):
         with urlopen(request, timeout=5) as response:
             return response.read().decode()
 
-    def test_chat_persists_reply_and_action_transparency(self) -> None:
+    @patch("job_agent.app.readiness", return_value={"ready": True})
+    def test_chat_persists_reply_and_action_transparency(self, _readiness) -> None:
         result = {
             "type": "done",
             "content": "You have one role worth looking at.",
@@ -68,7 +84,30 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(["user", "assistant"], [item["role"] for item in thread["messages"]])
         self.assertEqual("get_opportunities", thread["actions"][0]["tool_name"])
 
-    def test_strategy_and_settings_endpoints_are_available(self) -> None:
+    @patch(
+        "job_agent.app.readiness",
+        return_value={
+            "ready": False,
+            "state": "installing",
+            "headline": "Juno is still setting herself up",
+        },
+    )
+    def test_chat_is_locked_without_persisting_a_message_during_download(
+        self, _readiness
+    ) -> None:
+        request = Request(
+            self.base + "/api/chat",
+            data=json.dumps({"message": "Hello"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as unavailable:
+            urlopen(request, timeout=5)
+        self.assertEqual(503, unavailable.exception.code)
+        self.assertEqual([], self.get("/api/thread")["messages"])
+
+    @patch("job_agent.app.technical_status", return_value={"ready": True})
+    def test_strategy_and_settings_endpoints_are_available(self, _status) -> None:
         strategy = self.get("/api/strategy")
         settings = self.get("/api/settings")
 
@@ -102,6 +141,23 @@ class AppApiTests(unittest.TestCase):
         with urlopen(authenticated, timeout=5) as response:
             result = json.loads(response.read())
         self.assertFalse(result["matched"])
+
+        gated = Request(
+            self.base + "/api/extension/analyze",
+            data=json.dumps({"page": page}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {paired['token']}",
+            },
+            method="POST",
+        )
+        with patch(
+            "job_agent.app.readiness",
+            return_value={"ready": False, "state": "installing"},
+        ):
+            with self.assertRaises(HTTPError) as unavailable:
+                urlopen(gated, timeout=5)
+        self.assertEqual(503, unavailable.exception.code)
 
     def test_extension_payload_limit_is_enforced_before_json_parsing(self) -> None:
         request = Request(

@@ -21,6 +21,7 @@ export function createChat({
   const wrap = el("div", { class: "composer-wrap" }, el("div", { class: "composer-inner" }, suggestionRow, composer));
 
   let busy = false;
+  let junoReady = document.documentElement.dataset.junoReady === "true";
   autoGrow(textarea);
 
   const scroller = () => thread.closest(".page");
@@ -101,7 +102,7 @@ export function createChat({
 
   function setSuggestions(items) {
     clear(suggestionRow);
-    if (busy) return;
+    if (busy || !junoReady) return;
     for (const item of items) {
       suggestionRow.append(
         el("button", { class: "chip", type: "button", text: item, onClick: () => submit(item) })
@@ -111,14 +112,16 @@ export function createChat({
 
   function setBusy(state) {
     busy = state;
-    send.disabled = state || !textarea.value.trim();
-    textarea.disabled = false;
+    send.disabled = state || !junoReady || !textarea.value.trim();
+    textarea.disabled = !junoReady;
+    textarea.placeholder = junoReady ? placeholder : "Juno is downloading…";
+    composer.classList.toggle("is-locked", !junoReady);
     if (state) clear(suggestionRow);
   }
 
   async function submit(text) {
     const message = String(text || textarea.value).trim();
-    if (!message || busy) return;
+    if (!message || busy || !junoReady) return;
     textarea.value = "";
     textarea.style.height = "auto";
     setBusy(true);
@@ -189,14 +192,14 @@ export function createChat({
           if (result.changed) onChanged();
         },
       },
-    }).catch(() => {
+    }).catch((problem) => {
       settle();
       status.remove();
       bubble.append(
         el(
           "div",
           { class: "prose muted" },
-          prose("Juno couldn't be reached just now. She may still be waking up.")
+          prose(problem?.message || "Juno couldn't be reached just now.")
         )
       );
       setBusy(false);
@@ -209,7 +212,7 @@ export function createChat({
   });
 
   textarea.addEventListener("input", () => {
-    send.disabled = busy || !textarea.value.trim();
+    send.disabled = busy || !junoReady || !textarea.value.trim();
   });
 
   textarea.addEventListener("keydown", (event) => {
@@ -220,8 +223,13 @@ export function createChat({
   });
 
   renderHistory();
+  window.addEventListener("juno-readiness", (event) => {
+    junoReady = Boolean(event.detail?.ready);
+    setBusy(busy);
+    if (!busy) setSuggestions(suggestions);
+  });
   setSuggestions(suggestions);
-  send.disabled = true;
+  setBusy(false);
 
   return {
     thread,

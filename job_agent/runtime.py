@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 from urllib.parse import urlsplit
 
-from job_agent.config import load_config, save_model
-from job_agent.lmstudio import downloaded_models, lms, lms_bin, server_reachable, status
+from job_agent.config import MODEL_INSTANCE_ID, load_config, save_model
+from job_agent.lmstudio import loaded_context_length, lms, lms_bin, server_reachable, status
 
 
 @dataclass
@@ -44,6 +44,10 @@ def _model_loaded(model: str) -> bool:
     )
 
 
+def _model_unloaded(model: str) -> bool:
+    return not _model_loaded(model)
+
+
 def start_runtime(log=print) -> RuntimeSession:
     cfg = load_config()
     if lms_bin() is None:
@@ -64,18 +68,47 @@ def start_runtime(log=print) -> RuntimeSession:
         session.started_daemon = True
 
     if before["modelLoaded"]:
-        log(f"{cfg.model} is already loaded")
-    else:
-        log(f"Loading {cfg.model}")
-        loaded = lms("load", cfg.model, f"--context-length={cfg.context_length}")
-        if loaded.returncode != 0:
-            loaded = lms("load", cfg.model, "-c", str(cfg.context_length))
-        log(_output(loaded) or "model loaded")
-        if loaded.returncode != 0:
-            raise RuntimeError(f"Juno's model could not load: {_output(loaded) or 'unknown error'}")
-        if not _wait_for(lambda: _model_loaded(cfg.model), 180):
-            raise RuntimeError("Juno's model did not finish loading.")
-        session.loaded_model = True
+        log(
+            f"Reloading {cfg.model} with Clover's {cfg.context_length}-token context"
+        )
+        unloaded = lms("unload", "--all")
+        if unloaded.returncode != 0:
+            raise RuntimeError(
+                f"Juno's model could not be reconfigured: {_output(unloaded) or 'unknown error'}"
+            )
+        if not _wait_for(lambda: _model_unloaded(cfg.model), 30):
+            raise RuntimeError("Juno's old model instance did not finish unloading.")
+        before["modelLoaded"] = False
+
+    log(f"Loading {cfg.model}")
+    loaded = lms(
+        "load",
+        cfg.model,
+        "-c",
+        str(cfg.context_length),
+        "--identifier",
+        MODEL_INSTANCE_ID,
+    )
+    if loaded.returncode != 0:
+        loaded = lms(
+            "load",
+            cfg.model,
+            f"--context-length={cfg.context_length}",
+            "--identifier",
+            MODEL_INSTANCE_ID,
+        )
+    log(_output(loaded) or "model loaded")
+    if loaded.returncode != 0:
+        raise RuntimeError(f"Juno's model could not load: {_output(loaded) or 'unknown error'}")
+    if not _wait_for(lambda: _model_loaded(MODEL_INSTANCE_ID), 180):
+        raise RuntimeError("Juno's model did not finish loading.")
+    actual_context = loaded_context_length(MODEL_INSTANCE_ID)
+    if actual_context not in (None, cfg.context_length):
+        raise RuntimeError(
+            f"Juno loaded with a {actual_context}-token context instead of "
+            f"{cfg.context_length}."
+        )
+    session.loaded_model = True
 
     if server_reachable():
         log("LM Studio server already running")
@@ -101,16 +134,20 @@ def switch_model(model: str, log=print) -> RuntimeSession:
     name = model.strip()
     if not name:
         raise ValueError("Model is required")
+    previous = load_config().model
     save_model(name)
     if lms_bin() is None:
+        save_model(previous)
         raise FileNotFoundError("LM Studio CLI is not installed. Run setup from Settings.")
-    listed = " ".join(downloaded_models())
-    if name not in listed and name.split("/")[-1] not in listed:
-        log(f"Downloading {name}")
-        got = lms("get", name, "--yes")
-        if got.returncode != 0:
-            raise RuntimeError(got.stderr or got.stdout or "Model download failed")
-        log((got.stdout or got.stderr).strip())
+    try:
+        # Reuse first-run downloading so upgrades are resumable, visible in the
+        # readiness meter, and lock model-backed features until complete.
+        from job_agent.setup import ensure_model
+
+        ensure_model(log)
+    except Exception:
+        save_model(previous)
+        raise
     try:
         lms("unload", "--all")
     except Exception:

@@ -384,6 +384,112 @@ def list_messages(conversation_id: str, limit: int = 200) -> list[dict[str, Any]
     return turns
 
 
+def latest_conversation_summary(conversation_id: str) -> dict[str, Any] | None:
+    initialize_database()
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT id, conversation_id, summary_text, source_start_message_id,
+                   source_end_message_id, source_message_count, model,
+                   created_at, updated_at
+            FROM conversation_summary
+            WHERE conversation_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_messages_after(
+    conversation_id: str,
+    message_id: str | None,
+    *,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    """Return visible messages appended after a source boundary, oldest first."""
+    initialize_database()
+    with connect() as connection:
+        boundary = 0
+        if message_id:
+            row = connection.execute(
+                "SELECT rowid FROM message WHERE id = ? AND conversation_id = ?",
+                (message_id, conversation_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Conversation summary source boundary no longer exists.")
+            boundary = int(row["rowid"])
+        rows = connection.execute(
+            """
+            SELECT id, role, content, occurred_at, model_run_id
+            FROM message
+            WHERE conversation_id = ? AND role IN ('user', 'assistant') AND rowid > ?
+            ORDER BY rowid
+            LIMIT ?
+            """,
+            (conversation_id, boundary, max(1, min(limit, 2_000))),
+        ).fetchall()
+    turns = []
+    for row in rows:
+        turn = dict(row)
+        if turn["role"] == "assistant":
+            turn["content"] = strip_thinking(str(turn["content"] or ""))
+        turns.append(turn)
+    return turns
+
+
+def add_conversation_summary(
+    conversation_id: str,
+    *,
+    summary_text: str,
+    source_start_message_id: str,
+    source_end_message_id: str,
+    source_message_count: int,
+    model: str,
+) -> dict[str, Any]:
+    clean = summary_text.strip()
+    if not clean:
+        raise ValueError("Conversation summary cannot be empty.")
+    now = utc_now()
+    summary_id = new_id()
+    with transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO conversation_summary(
+                id, conversation_id, summary_text, source_start_message_id,
+                source_end_message_id, source_message_count, model,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(conversation_id, source_end_message_id) DO NOTHING
+            """,
+            (
+                summary_id,
+                conversation_id,
+                clean,
+                source_start_message_id,
+                source_end_message_id,
+                source_message_count,
+                model,
+                now,
+                now,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT id, conversation_id, summary_text, source_start_message_id,
+                   source_end_message_id, source_message_count, model,
+                   created_at, updated_at
+            FROM conversation_summary
+            WHERE conversation_id = ? AND source_end_message_id = ?
+            """,
+            (conversation_id, source_end_message_id),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("Clover could not save the conversation summary.")
+    return dict(row)
+
+
 PROGRESS_DEDUPE_SECONDS = 600
 
 # Clover records progress itself whenever it changes something, and Juno may also

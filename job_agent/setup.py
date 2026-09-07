@@ -6,6 +6,7 @@ import subprocess
 import time
 from collections.abc import Callable
 
+from job_agent import download_progress
 from job_agent.config import load_config
 from job_agent.desktop import install_desktop
 from job_agent.lmstudio import (
@@ -13,7 +14,7 @@ from job_agent.lmstudio import (
     ensure_prompt_and_mcp,
     lms,
     lms_bin,
-    lms_live,
+    lms_stream,
 )
 from job_agent.storage import initialize_database
 
@@ -88,18 +89,30 @@ def ensure_model(log: Log = print) -> None:
     cfg = load_config()
     listed = lms("ls")
     if cfg.model in listed.stdout or cfg.model.split("/")[-1] in listed.stdout:
+        download_progress.finish()
         log(f"{cfg.model} already downloaded - skipping model install")
         return
     log(f"Downloading {cfg.model} (hardware-recommended quantization)")
     got = None
     for attempt in range(1, MODEL_DOWNLOAD_ATTEMPTS + 1):
+        download_progress.begin(cfg.model, attempt, MODEL_DOWNLOAD_ATTEMPTS)
         if attempt > 1:
             log(
                 f"Resuming model download (attempt {attempt}/{MODEL_DOWNLOAD_ATTEMPTS})"
             )
-        runner = lms_live if log is print else lms
+        def progress_line(line: str) -> None:
+            download_progress.consume(line)
+            if log is print:
+                print(f"\r{line}", end="", flush=True)
+
         try:
-            got = runner("get", cfg.model, "--yes", timeout=600)
+            got = lms_stream(
+                "get",
+                cfg.model,
+                "--yes",
+                on_output=progress_line,
+                timeout=600,
+            )
         except subprocess.TimeoutExpired:
             got = subprocess.CompletedProcess(
                 args=["lms", "get", cfg.model],
@@ -113,11 +126,14 @@ def ensure_model(log: Log = print) -> None:
             log("The download was interrupted. Clover will resume it automatically.")
             time.sleep(min(30, attempt * 5))
     if got is None or got.returncode != 0:
-        raise RuntimeError(
+        message = (
             (got.stderr if got else "")
             or (got.stdout if got else "")
             or "Model download failed after four resumable attempts"
         )
+        download_progress.fail(message)
+        raise RuntimeError(message)
+    download_progress.finish()
     output = (got.stdout or got.stderr or "").strip()
     if output:
         log(output)

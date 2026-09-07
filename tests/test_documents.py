@@ -12,12 +12,13 @@ from unittest.mock import patch
 from job_agent.documents import (
     document_text,
     extract_text,
+    refresh_pdf_extractions,
     save_document,
     save_document_base64,
     save_pasted_text,
 )
 from job_agent.person import profile_overview
-from job_agent.storage import initialize_database
+from job_agent.storage import connect, initialize_database
 
 RESUME_TEXT = (
     "Sam Rivera\n"
@@ -72,6 +73,20 @@ class DocumentTests(unittest.TestCase):
 
         self.assertIn("Sam Rivera", text)
         self.assertIn("Northwind", text)
+
+    def test_existing_pdf_text_is_reextracted_after_parser_upgrade(self) -> None:
+        save_document(
+            filename="resume.pdf",
+            data=build_pdf(RESUME_TEXT.splitlines()),
+        )
+        with connect() as connection:
+            connection.execute(
+                "UPDATE person_document SET text_content = 'garbled old extraction'"
+            )
+            connection.commit()
+
+        self.assertEqual(1, refresh_pdf_extractions())
+        self.assertIn("Northwind", document_text())
 
     def test_unreadable_files_are_saved_with_an_honest_message(self) -> None:
         result = save_document(filename="scan.pdf", data=b"%PDF-1.4 not really a pdf")

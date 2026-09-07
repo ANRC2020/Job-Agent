@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+from io import BytesIO
 import unittest
-from unittest.mock import patch
+from urllib.error import HTTPError
+from unittest.mock import MagicMock, patch
 
-from job_agent.chat import EMPTY_RESPONSE_FALLBACK, _run_calls, activity_for, stream
+from job_agent.chat import (
+    EMPTY_RESPONSE_FALLBACK,
+    MAX_OUTPUT_TOKENS,
+    _payload,
+    _post,
+    _run_calls,
+    activity_for,
+    stream,
+)
 from job_agent.reasoning import ThinkingFilter, strip_thinking
 from job_agent.repo_tools import CHAT_TOOL_NAMES, openai_tools
 
@@ -128,10 +138,40 @@ class ToolSurfaceTests(unittest.TestCase):
 
 
 class EmptyResponseTests(unittest.TestCase):
+    def test_transient_model_unloaded_error_is_retried(self) -> None:
+        unloaded = HTTPError(
+            "http://localhost/v1/responses",
+            500,
+            "Internal Server Error",
+            {},
+            BytesIO(b'{"error":{"message":"Model unloaded."}}'),
+        )
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"output":[]}'
+        with patch("job_agent.chat.wait_for_server", return_value=True):
+            with patch(
+                "job_agent.chat.urlopen", side_effect=[unloaded, response]
+            ) as request:
+                with patch("job_agent.chat.time.sleep"):
+                    self.assertEqual(
+                        {"output": []}, _post({"model": "test"}, timeout=5)
+                    )
+
+        self.assertEqual(2, request.call_count)
+
     def test_reasoning_only_generation_is_retried_for_a_visible_answer(self) -> None:
-        first = iter([{"choices": [{"delta": {"reasoning_content": "private reasoning"}}]}])
-        second = iter([{"choices": [{"delta": {"content": "Yes — I can see your resume."}}]}])
-        with patch("job_agent.chat._post_stream", side_effect=[first, second]) as post:
+        first = {"output": [{"type": "reasoning", "content": "private reasoning"}]}
+        second = {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "Yes — I can see your resume."}
+                    ],
+                }
+            ]
+        }
+        with patch("job_agent.chat._post", side_effect=[first, second]) as post:
             events = list(
                 stream(
                     [{"role": "user", "content": "Can you see my resume?"}],
@@ -145,13 +185,85 @@ class EmptyResponseTests(unittest.TestCase):
 
     def test_two_empty_generations_return_a_visible_fallback(self) -> None:
         with patch(
-            "job_agent.chat._post_stream",
-            side_effect=[iter([]), iter([])],
+            "job_agent.chat._post",
+            side_effect=[{"output": []}, {"output": []}],
         ):
             events = list(stream([{"role": "user", "content": "Hello"}], tool_names=None))
 
         self.assertEqual(EMPTY_RESPONSE_FALLBACK, events[-1]["content"])
         self.assertEqual(EMPTY_RESPONSE_FALLBACK, events[-2]["text"])
+
+    def test_responses_requests_disable_reasoning_and_bound_output(self) -> None:
+        payload = _payload([{"role": "user", "content": "Hello"}], CHAT_TOOL_NAMES)
+
+        self.assertEqual({"effort": "none"}, payload["reasoning"])
+        self.assertEqual(MAX_OUTPUT_TOKENS, payload["max_output_tokens"])
+        self.assertEqual("clover-juno", payload["model"])
+        self.assertTrue(payload["tools"])
+        self.assertNotIn("messages", payload)
+
+    def test_responses_function_call_is_returned_to_the_model(self) -> None:
+        tool_call = {
+            "id": "fc-1",
+            "call_id": "call-1",
+            "type": "function_call",
+            "name": "read_my_document",
+            "arguments": "{}",
+        }
+        answer = {
+            "type": "message",
+            "content": [{"type": "output_text", "text": "I read your resume."}],
+        }
+        with patch(
+                "job_agent.chat._post",
+                side_effect=[{"output": [tool_call]}, {"output": [answer]}],
+            ) as post:
+            with patch(
+                "job_agent.chat.call_tool", return_value='{"text":"Resume"}'
+            ):
+                events = list(
+                    stream(
+                    [{"role": "user", "content": "Use the stored document tool"}],
+                        tool_names=("read_my_document",),
+                    )
+                )
+
+        continued_input = post.call_args_list[1].args[0]["input"]
+        self.assertIn(tool_call, continued_input)
+        self.assertTrue(
+            any(item.get("type") == "function_call_output" for item in continued_input)
+        )
+        self.assertEqual("I read your resume.", events[-1]["content"])
+
+    def test_resume_questions_preload_the_document_without_model_discretion(self) -> None:
+        answer = {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "You build AI systems."}
+                    ],
+                }
+            ]
+        }
+        with patch("job_agent.chat._post", return_value=answer) as post:
+            with patch(
+                "job_agent.chat.call_tool",
+                return_value='{"found":true,"text":"Founding Engineer"}',
+            ) as tool:
+                events = list(
+                    stream(
+                        [{"role": "user", "content": "What are my skills?"}],
+                        tool_names=CHAT_TOOL_NAMES,
+                    )
+                )
+
+        tool.assert_called_once_with("read_my_document", {"kind": "resume"})
+        model_input = post.call_args.args[0]["input"]
+        self.assertTrue(
+            any(item.get("type") == "function_call_output" for item in model_input)
+        )
+        self.assertEqual("You build AI systems.", events[-1]["content"])
 
 
 if __name__ == "__main__":
