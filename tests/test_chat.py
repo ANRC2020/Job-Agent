@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from job_agent.chat import _run_calls, activity_for
+from job_agent.chat import EMPTY_RESPONSE_FALLBACK, _run_calls, activity_for, stream
 from job_agent.reasoning import ThinkingFilter, strip_thinking
 from job_agent.repo_tools import CHAT_TOOL_NAMES, openai_tools
 
@@ -125,6 +125,33 @@ class ToolSurfaceTests(unittest.TestCase):
         observation_arguments = call.call_args_list[1].args[1]
         self.assertEqual("opportunity", observation_arguments["scope"])
         self.assertEqual("active-opportunity", observation_arguments["opportunityId"])
+
+
+class EmptyResponseTests(unittest.TestCase):
+    def test_reasoning_only_generation_is_retried_for_a_visible_answer(self) -> None:
+        first = iter([{"choices": [{"delta": {"reasoning_content": "private reasoning"}}]}])
+        second = iter([{"choices": [{"delta": {"content": "Yes — I can see your resume."}}]}])
+        with patch("job_agent.chat._post_stream", side_effect=[first, second]) as post:
+            events = list(
+                stream(
+                    [{"role": "user", "content": "Can you see my resume?"}],
+                    tool_names=None,
+                )
+            )
+
+        self.assertEqual(2, post.call_count)
+        self.assertEqual("Yes — I can see your resume.", events[-1]["content"])
+        self.assertTrue(any(event.get("type") == "delta" for event in events))
+
+    def test_two_empty_generations_return_a_visible_fallback(self) -> None:
+        with patch(
+            "job_agent.chat._post_stream",
+            side_effect=[iter([]), iter([])],
+        ):
+            events = list(stream([{"role": "user", "content": "Hello"}], tool_names=None))
+
+        self.assertEqual(EMPTY_RESPONSE_FALLBACK, events[-1]["content"])
+        self.assertEqual(EMPTY_RESPONSE_FALLBACK, events[-2]["text"])
 
 
 if __name__ == "__main__":

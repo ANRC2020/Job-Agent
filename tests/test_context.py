@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from job_agent import opportunities
 from job_agent.context import MAX_CONTEXT_CHARS, build_turn_context
+from job_agent.documents import save_pasted_text
 from job_agent.learning import record_hypothesis, review_learning
 from job_agent.person import remember_fact
 from job_agent.storage import (
@@ -121,6 +122,23 @@ class ScopedContextTests(unittest.TestCase):
 
         self.assertLessEqual(len(block), MAX_CONTEXT_CHARS)
         self.payload(block)
+
+    def test_active_resume_text_is_present_on_every_turn(self) -> None:
+        resume = (
+            "Taylor Example\nProduct writer\n"
+            "Built onboarding guides that reduced support requests by thirty percent.\n"
+            "Skilled in research, information architecture, and customer education."
+        )
+        save_pasted_text(text=resume)
+        thread_id = opportunities.thread_id(self.save("alpha"))
+
+        block = build_turn_context(
+            conversation_id=thread_id,
+            task="Can you see my resume?",
+        )
+
+        self.assertIn("pasted-resume.txt", block)
+        self.assertIn("Built onboarding guides", block)
 
 
 if __name__ == "__main__":

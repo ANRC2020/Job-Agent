@@ -32,6 +32,15 @@ export function createChat({
     if (force || nearBottom) box.scrollTop = box.scrollHeight;
   }
 
+  let scrollFrame = null;
+  function scheduleScroll() {
+    if (scrollFrame !== null) return;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = null;
+      scrollDown();
+    });
+  }
+
   function addUserTurn(text) {
     thread.append(el("div", { class: "turn turn-user" }, el("div", { class: "bubble", text })));
   }
@@ -120,6 +129,9 @@ export function createChat({
     const bubble = addJunoTurn();
     const status = el("div", { class: "activity" }, dots(), el("span", { text: "Thinking" }));
     bubble.append(status);
+    // Reveal the pending turn once. Activity updates must not keep pushing the
+    // viewport while the model is doing invisible reasoning.
+    scrollDown(true);
 
     // Text arrives in blocks: Juno may say something, go do a few things, then
     // carry on. Each block is settled into prose once it's finished.
@@ -141,7 +153,6 @@ export function createChat({
       handlers: {
         onActivity: (label) => {
           status.lastChild.textContent = label;
-          scrollDown();
         },
         onDelta: (piece) => {
           if (!block) {
@@ -150,7 +161,7 @@ export function createChat({
           }
           pending += piece;
           block.textContent = pending;
-          scrollDown();
+          scheduleScroll();
         },
         onBreak: settle,
         onError: (problem) => {

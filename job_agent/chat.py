@@ -37,6 +37,14 @@ OPPORTUNITY_BOUND_TOOLS = {
     "search_database",
 }
 
+EMPTY_RESPONSE_RETRY = (
+    "Your previous generation contained no user-visible answer. Respond now with a concise, "
+    "direct answer to the user's latest message. Do not output private reasoning."
+)
+EMPTY_RESPONSE_FALLBACK = (
+    "I lost the thread for a moment. Please ask me that once more."
+)
+
 
 def activity_for(tool_name: str) -> str:
     return TOOL_ACTIVITY.get(tool_name, "Checking something")
@@ -170,6 +178,7 @@ def complete(
     messages: list[dict[str, Any]] = [system_message(context), *user_messages]
     traces: list[dict[str, Any]] = []
     spoken: list[str] = []
+    retried_empty = False
     for _ in range(max_tool_rounds):
         data = _post(_payload(messages, tool_names))
         choice = (data.get("choices") or [{}])[0]
@@ -179,6 +188,10 @@ def complete(
         if content:
             spoken.append(content)
         if not raw_calls:
+            if not content and not retried_empty:
+                retried_empty = True
+                messages.append({"role": "system", "content": EMPTY_RESPONSE_RETRY})
+                continue
             break
         _run_calls(
             [
@@ -194,7 +207,8 @@ def complete(
             content,
             opportunity_id,
         )
-    return {"content": "\n\n".join(spoken).strip(), "tools": traces, "model": cfg.model}
+    content = "\n\n".join(spoken).strip() or EMPTY_RESPONSE_FALLBACK
+    return {"content": content, "tools": traces, "model": cfg.model}
 
 
 def stream(
@@ -211,6 +225,7 @@ def stream(
     messages: list[dict[str, Any]] = [system_message(context), *user_messages]
     traces: list[dict[str, Any]] = []
     spoken: list[str] = []
+    retried_empty = False
 
     for _ in range(max_tool_rounds):
         parts: list[str] = []
@@ -250,6 +265,11 @@ def stream(
         if joined:
             spoken.append(joined)
         if not pending:
+            if not joined and not retried_empty:
+                retried_empty = True
+                messages.append({"role": "system", "content": EMPTY_RESPONSE_RETRY})
+                yield {"type": "activity", "text": "Finishing the thought"}
+                continue
             break
 
         calls = [pending[index] for index in sorted(pending) if pending[index]["name"]]
@@ -261,11 +281,15 @@ def stream(
         if joined:
             yield {"type": "break"}
 
+    content = strip_thinking("\n\n".join(spoken))
+    if not content:
+        content = EMPTY_RESPONSE_FALLBACK
+        yield {"type": "delta", "text": content}
     yield {
         "type": "done",
         # The stream was filtered as it arrived; scrub the result too, since this
         # is the copy that gets stored and replayed on every later turn.
-        "content": strip_thinking("\n\n".join(spoken)),
+        "content": content,
         "tools": traces,
         "model": cfg.model,
     }

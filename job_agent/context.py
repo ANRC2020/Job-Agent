@@ -67,6 +67,15 @@ def _profile_context(person_id: str) -> dict[str, Any]:
                 (person_id,),
             )
         ]
+        resume = connection.execute(
+            """
+            SELECT id, filename, text_content, updated_at
+            FROM person_document
+            WHERE person_id = ? AND kind = 'resume' AND status = 'active'
+            ORDER BY version DESC LIMIT 1
+            """,
+            (person_id,),
+        ).fetchone()
     for preference in preferences:
         try:
             preference["value"] = json.loads(preference.pop("value_json"))
@@ -77,6 +86,19 @@ def _profile_context(person_id: str) -> dict[str, Any]:
         "facts": facts,
         "experience": experiences,
         "communicationPreferences": preferences,
+        "resume": (
+            {
+                "id": resume["id"],
+                "filename": resume["filename"],
+                "updatedAt": resume["updated_at"],
+                "excerpts": [
+                    text[index : index + 1_800]
+                    for index in range(0, min(len(text), 7_200), 1_800)
+                ],
+            }
+            if resume is not None and (text := str(resume["text_content"] or "")).strip()
+            else None
+        ),
     }
 
 
@@ -153,6 +175,7 @@ def _bounded_payload(payload: dict[str, Any], max_chars: int) -> dict[str, Any]:
     drop_order = (
         ("recentActions", 4),
         ("profile", "experience", 4),
+        ("profile", "resume", "excerpts", 3),
         ("opportunity", "interactions", 5),
         ("opportunity", "stageHistory", 5),
         ("opportunity", "materials", 3),
@@ -169,9 +192,15 @@ def _bounded_payload(payload: dict[str, Any], max_chars: int) -> dict[str, Any]:
             key, keep = path
             if isinstance(target, dict) and isinstance(target.get(key), list):
                 target[key] = target[key][: int(keep)]
-        else:
+        elif len(path) == 3:
             root, key, keep = path
             nested = candidate.get(root)
+            if isinstance(nested, dict) and isinstance(nested.get(key), list):
+                nested[key] = nested[key][: int(keep)]
+        else:
+            root, middle, key, keep = path
+            nested = candidate.get(root)
+            nested = nested.get(middle) if isinstance(nested, dict) else None
             if isinstance(nested, dict) and isinstance(nested.get(key), list):
                 nested[key] = nested[key][: int(keep)]
         if len(json.dumps(candidate, ensure_ascii=False)) <= max_chars:
