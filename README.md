@@ -37,11 +37,25 @@ cd Job-Agent
 
 **Windows**
 
-```powershell
-.\install.ps1
+Double-click `install.cmd`, or run:
+
+```bat
+install.cmd
 ```
 
-That installs the desktop app, sets up LM Studio only if it is missing, and opens Clover.
+That installs the desktop app, sets up LM Studio only if it is missing, and opens Clover. After
+installation, use the **Clover** shortcut on the Desktop or Start Menu. Clover starts and stops
+Juno automatically; no terminal should remain open.
+
+## Browser companion
+
+The optional Chromium extension brings Juno into the job page you are viewing. It can assess the
+role, answer page-aware questions, save the opportunity when you ask, and fill safe empty
+application fields without ever submitting.
+
+Load the extension from the repository's `extension` folder, then create a one-time pairing code
+under **Clover → Settings → Browser companion**. Site access is requested one site at a time and
+page captures remain temporary by default. See the [browser companion instructions](extension/README.md).
 
 ## Local data
 

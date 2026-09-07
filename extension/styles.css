@@ -1,0 +1,90 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f5ef;
+  --surface: #fffdf8;
+  --ink: #24251f;
+  --muted: #6c7067;
+  --line: #dcdacf;
+  --clover: #3f7658;
+  --clover-dark: #2f5c43;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12130f;
+    --surface: #1b1c17;
+    --ink: #e8e6dc;
+    --muted: #a4a49a;
+    --line: #34362f;
+    --clover: #73ad89;
+    --clover-dark: #8cc29e;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-width: 300px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(12px);
+}
+header img { width: 28px; height: 28px; border-radius: 8px; }
+header div { display: flex; flex-direction: column; line-height: 1.2; }
+header strong { font-size: 15px; }
+header span { color: var(--muted); font-size: 11px; }
+.status { margin-left: auto; }
+main { display: grid; gap: 12px; padding: 14px; }
+.card {
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.hidden { display: none !important; }
+h1 { margin: 3px 0 6px; font-size: 16px; line-height: 1.3; }
+p { margin: 0 0 12px; color: var(--muted); }
+.eyebrow {
+  color: var(--clover);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+form { display: grid; gap: 9px; }
+label { color: var(--muted); font-size: 12px; }
+input, textarea, button {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 11px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+textarea { resize: vertical; }
+button { width: auto; cursor: pointer; font-weight: 600; }
+button:disabled { cursor: wait; opacity: .55; }
+button.primary { border-color: var(--clover); background: var(--clover); color: #fff; }
+button.primary:hover { background: var(--clover-dark); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.response { white-space: pre-wrap; }
+#notice {
+  min-height: 20px;
+  padding: 0 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+#notice.error { color: #b65f58; }

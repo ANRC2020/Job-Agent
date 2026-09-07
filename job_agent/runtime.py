@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
+from typing import Callable
+from urllib.parse import urlsplit
+
 from job_agent.config import load_config, save_model
 from job_agent.lmstudio import downloaded_models, lms, lms_bin, server_reachable, status
 
@@ -11,6 +15,33 @@ class RuntimeSession:
     started_server: bool = False
     loaded_model: bool = False
     notes: list[str] = field(default_factory=list)
+
+
+def _output(result) -> str:
+    return (result.stdout or result.stderr or "").strip()
+
+
+def _wait_for(check: Callable[[], bool], timeout: float, interval: float = 0.75) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if check():
+            return True
+        time.sleep(interval)
+    return check()
+
+
+def _daemon_running() -> bool:
+    result = lms("daemon", "status")
+    return result.returncode == 0 and "running" in (
+        (result.stdout or "") + (result.stderr or "")
+    ).lower()
+
+
+def _model_loaded(model: str) -> bool:
+    result = lms("ps")
+    return result.returncode == 0 and (
+        model in (result.stdout or "") or model.split("/")[-1] in (result.stdout or "")
+    )
 
 
 def start_runtime(log=print) -> RuntimeSession:
@@ -25,23 +56,44 @@ def start_runtime(log=print) -> RuntimeSession:
     else:
         log("Starting LM Studio daemon")
         up = lms("daemon", "up")
-        log((up.stdout or up.stderr).strip() or "daemon up")
+        log(_output(up) or "daemon up")
+        if up.returncode != 0:
+            raise RuntimeError(f"LM Studio daemon could not start: {_output(up) or 'unknown error'}")
+        if not _wait_for(_daemon_running, 30):
+            raise RuntimeError("LM Studio daemon did not become ready.")
         session.started_daemon = True
 
-    log(f"Loading {cfg.model}")
-    loaded = lms("load", cfg.model, f"--context-length={cfg.context_length}")
-    if loaded.returncode != 0:
-        loaded = lms("load", cfg.model, "-c", str(cfg.context_length))
-    log((loaded.stdout or loaded.stderr).strip() or "model loaded")
-    session.loaded_model = loaded.returncode == 0 or cfg.model in (loaded.stdout or "")
+    if before["modelLoaded"]:
+        log(f"{cfg.model} is already loaded")
+    else:
+        log(f"Loading {cfg.model}")
+        loaded = lms("load", cfg.model, f"--context-length={cfg.context_length}")
+        if loaded.returncode != 0:
+            loaded = lms("load", cfg.model, "-c", str(cfg.context_length))
+        log(_output(loaded) or "model loaded")
+        if loaded.returncode != 0:
+            raise RuntimeError(f"Juno's model could not load: {_output(loaded) or 'unknown error'}")
+        if not _wait_for(lambda: _model_loaded(cfg.model), 180):
+            raise RuntimeError("Juno's model did not finish loading.")
+        session.loaded_model = True
 
     if server_reachable():
         log("LM Studio server already running")
     else:
         log("Starting local server")
-        started = lms("server", "start")
-        log((started.stdout or started.stderr).strip() or "server start")
+        port = urlsplit(cfg.api_base).port or 1234
+        started = lms("server", "start", "--port", str(port))
+        if started.returncode != 0:
+            started = lms("server", "start")
+        log(_output(started) or "server start")
+        if started.returncode != 0 and not server_reachable():
+            raise RuntimeError(
+                f"LM Studio's local server could not start: {_output(started) or 'unknown error'}"
+            )
         session.started_server = True
+    if not _wait_for(server_reachable, 60):
+        raise RuntimeError("LM Studio's local server did not become reachable.")
+    log("Juno is ready")
     return session
 
 

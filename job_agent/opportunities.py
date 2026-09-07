@@ -381,6 +381,41 @@ def thread_id(process_id: str, person_id: str = DEFAULT_PERSON_ID) -> str:
     )
 
 
+def find_process_by_source_url(
+    source_url: str,
+    *,
+    person_id: str = DEFAULT_PERSON_ID,
+) -> dict[str, Any] | None:
+    """Find a saved opportunity without creating a thread or changing history."""
+    initialize_database()
+    clean = (source_url or "").strip()
+    if not clean:
+        return None
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT p.id, p.current_stage, p.status, j.title,
+                   COALESCE(o.name, '') AS company, j.source_url
+            FROM job_process p
+            JOIN job j ON j.id = p.job_id
+            LEFT JOIN organization o ON o.id = j.organization_id
+            WHERE p.person_id = ? AND j.source_url = ?
+            ORDER BY p.updated_at DESC LIMIT 1
+            """,
+            (person_id, clean),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": str(row["id"]),
+        "title": str(row["title"] or ""),
+        "company": str(row["company"] or ""),
+        "stage": normalize_stage(str(row["current_stage"] or "")),
+        "status": str(row["status"] or ""),
+        "sourceUrl": str(row["source_url"] or ""),
+    }
+
+
 def _find_or_create_organization(connection, name: str, website: str | None) -> str | None:
     clean = (name or "").strip()
     if not clean:

@@ -40,7 +40,7 @@ def _install_cli(log: Log) -> None:
     if result.returncode != 0:
         raise RuntimeError("LM Studio CLI install failed")
     if lms_bin() is None:
-        raise RuntimeError("lms was not found after install. Open a new terminal and run job-agent setup again.")
+        raise RuntimeError("LM Studio installed, but Clover could not locate its command-line service.")
 
 
 def _install_desktop(log: Log) -> None:
@@ -85,9 +85,13 @@ def run_setup(log: Log = print) -> None:
     _install_cli(log)
     _install_desktop(log)
     if lms_bin() is None:
-        raise RuntimeError("lms was not found. Open a new terminal and re-run job-agent setup.")
+        raise RuntimeError("Clover could not locate LM Studio's command-line service.")
     log("Bootstrapping lms")
-    lms("bootstrap", "-y")
+    bootstrapped = lms("bootstrap", "-y")
+    if bootstrapped.returncode != 0:
+        raise RuntimeError(
+            bootstrapped.stderr or bootstrapped.stdout or "LM Studio bootstrap failed"
+        )
     listed = lms("ls")
     if cfg.model in listed.stdout or cfg.model.split("/")[-1] in listed.stdout:
         log(f"{cfg.model} already downloaded — skipping model install")

@@ -203,9 +203,9 @@ foreach ($dir in @($desktop, $start)) {
   $lnk = Join-Path $dir "Clover.lnk"
   $s = $w.CreateShortcut($lnk)
   $s.TargetPath = $python
-  $s.Arguments = "-m job_agent app"
+  $s.Arguments = "-m job_agent.launcher"
   $s.WorkingDirectory = $root
-  $s.WindowStyle = 1
+  $s.WindowStyle = 7
   $s.Description = "Clover — meet Juno, your local job assistant"
 """
         + icon_line

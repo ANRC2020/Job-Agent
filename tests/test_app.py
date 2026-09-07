@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import unittest
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest.mock import patch
 
@@ -73,6 +74,62 @@ class AppApiTests(unittest.TestCase):
 
         self.assertIn("funnel", strategy)
         self.assertEqual([], settings["pendingActions"])
+
+    def test_extension_routes_require_a_paired_bearer_token(self) -> None:
+        pairing = json.loads(self.post("/api/settings/extension/pairing-code", {}))
+        paired = json.loads(self.post("/api/extension/pair", {"code": pairing["code"]}))
+        page = {"url": "https://jobs.example.test/42", "title": "Writer", "fields": []}
+
+        unauthenticated = Request(
+            self.base + "/api/extension/resolve-page",
+            data=json.dumps({"page": page}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as denied:
+            urlopen(unauthenticated, timeout=5)
+        self.assertEqual(401, denied.exception.code)
+
+        authenticated = Request(
+            self.base + "/api/extension/resolve-page",
+            data=json.dumps({"page": page}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {paired['token']}",
+            },
+            method="POST",
+        )
+        with urlopen(authenticated, timeout=5) as response:
+            result = json.loads(response.read())
+        self.assertFalse(result["matched"])
+
+    def test_extension_payload_limit_is_enforced_before_json_parsing(self) -> None:
+        request = Request(
+            self.base + "/api/extension/pair",
+            data=b"x" * 512_001,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as rejected:
+            urlopen(request, timeout=5)
+        self.assertEqual(413, rejected.exception.code)
+
+    def test_extension_origin_is_confined_to_extension_routes(self) -> None:
+        generic = Request(
+            self.base + "/api/settings",
+            headers={"Origin": "chrome-extension://test-extension"},
+        )
+        with self.assertRaises(HTTPError) as rejected:
+            urlopen(generic, timeout=5)
+        self.assertEqual(403, rejected.exception.code)
+
+        browser_page = Request(
+            self.base + "/api/extension/status",
+            headers={"Origin": "https://malicious.example"},
+        )
+        with self.assertRaises(HTTPError) as rejected_page:
+            urlopen(browser_page, timeout=5)
+        self.assertEqual(403, rejected_page.exception.code)
 
 
 if __name__ == "__main__":

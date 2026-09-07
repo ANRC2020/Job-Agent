@@ -5,6 +5,7 @@ from typing import Any, Iterator
 from urllib.request import Request, urlopen
 
 from job_agent.config import load_config
+from job_agent.lmstudio import wait_for_server
 from job_agent.paths import system_prompt_path
 from job_agent.reasoning import ThinkingFilter, strip_thinking
 from job_agent.repo_tools import CHAT_TOOL_NAMES, call_tool, openai_tools
@@ -65,11 +66,15 @@ def _request(payload: dict[str, Any], *, stream: bool) -> Request:
 
 
 def _post(payload: dict[str, Any]) -> dict[str, Any]:
+    if not wait_for_server(120):
+        raise ConnectionError("Juno's local engine did not finish starting.")
     with urlopen(_request(payload, stream=False), timeout=300) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _post_stream(payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    if not wait_for_server(120):
+        raise ConnectionError("Juno's local engine did not finish starting.")
     with urlopen(_request(payload, stream=True), timeout=600) as resp:
         for raw in resp:
             line = raw.decode("utf-8", errors="replace").strip()

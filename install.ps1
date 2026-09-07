@@ -13,6 +13,17 @@ function Get-Uv {
     return $null
 }
 
+function Invoke-Checked {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments
+    )
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath failed with exit code $LASTEXITCODE"
+    }
+}
+
 if (-not (Get-Uv)) {
     Write-Host "==> Installing a local Python runtime (uv)"
     irm https://astral.sh/uv/install.ps1 | iex
@@ -22,20 +33,20 @@ $Uv = Get-Uv
 if (-not $Uv) { throw "Could not install uv. See https://docs.astral.sh/uv/getting-started/installation/" }
 
 Write-Host "==> Creating virtualenv"
-& $Uv python install 3.12
-& $Uv venv .venv --python 3.12 --allow-existing
+Invoke-Checked -FilePath $Uv -Arguments @("python", "install", "3.12")
+Invoke-Checked -FilePath $Uv -Arguments @("venv", ".venv", "--python", "3.12", "--allow-existing")
 
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 Write-Host "==> Installing Clover"
-& $Uv pip install --python $VenvPython -e $Root
+Invoke-Checked -FilePath $Uv -Arguments @("pip", "install", "--python", $VenvPython, "-e", $Root)
 
-$JobAgent = Join-Path $Root ".venv\Scripts\job-agent.exe"
 Write-Host "==> Running setup"
-& $JobAgent setup
+Invoke-Checked -FilePath $VenvPython -Arguments @("-m", "job_agent", "setup")
 
 Write-Host ""
 Write-Host "Installed Clover to the Desktop and Start Menu."
-Write-Host "Opening the app…"
+Write-Host "Opening Clover — no terminal needs to stay open."
 Write-Host ""
 if ($env:SKIP_APP -eq "1") { exit 0 }
-& $JobAgent launch
+$Pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
+Start-Process -FilePath $Pythonw -ArgumentList @("-m", "job_agent.launcher") -WorkingDirectory $Root

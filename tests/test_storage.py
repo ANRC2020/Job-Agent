@@ -46,11 +46,12 @@ class StorageTests(unittest.TestCase):
                 "002_person_memory_search.sql",
                 "003_opportunity_context.sql",
                 "004_behavioral_learning.sql",
+                "005_browser_extension.sql",
             ],
             first["migrationsApplied"],
         )
         self.assertEqual([], second["migrationsApplied"])
-        self.assertEqual(4, database_status()["schemaVersion"])
+        self.assertEqual(5, database_status()["schemaVersion"])
 
     def test_all_three_domains_are_installed(self) -> None:
         initialize_database()
@@ -211,7 +212,10 @@ class StorageTests(unittest.TestCase):
 
         result = initialize_database(target)
 
-        self.assertEqual(["004_behavioral_learning.sql"], result["migrationsApplied"])
+        self.assertEqual(
+            ["004_behavioral_learning.sql", "005_browser_extension.sql"],
+            result["migrationsApplied"],
+        )
         with sqlite3.connect(target) as upgraded:
             self.assertEqual(
                 1,

@@ -5,6 +5,7 @@ import os
 import platform
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -80,6 +81,16 @@ def server_reachable() -> bool:
             return 200 <= getattr(resp, "status", 200) < 300
     except (URLError, OSError, TimeoutError):
         return False
+
+
+def wait_for_server(timeout: float = 90, interval: float = 0.75) -> bool:
+    """Wait for LM Studio's API so early chat messages are not lost during startup."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if server_reachable():
+            return True
+        time.sleep(interval)
+    return server_reachable()
 
 
 def status() -> dict[str, Any]:

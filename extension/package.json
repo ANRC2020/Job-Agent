@@ -1,0 +1,11 @@
+{
+  "name": "clover-browser-companion",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/content.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}
