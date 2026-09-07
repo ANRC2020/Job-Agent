@@ -56,11 +56,16 @@ def _install_desktop(log: Log) -> None:
     system = platform.system()
     if system == "Darwin" and shutil.which("brew"):
         log("Installing LM Studio desktop app via Homebrew")
-        subprocess.run(["brew", "install", "--cask", "lm-studio"], check=False)
+        result = subprocess.run(["brew", "install", "--cask", "lm-studio"], check=False)
+        if result.returncode != 0 or not desktop_installed():
+            log("Repairing the LM Studio desktop installation")
+            subprocess.run(["brew", "reinstall", "--cask", "lm-studio"], check=False)
+        if not desktop_installed():
+            raise RuntimeError("LM Studio's desktop app could not be installed.")
         return
     if system == "Windows" and shutil.which("winget"):
         log("Installing LM Studio desktop app via winget")
-        subprocess.run(
+        result = subprocess.run(
             [
                 "winget",
                 "install",
@@ -73,6 +78,8 @@ def _install_desktop(log: Log) -> None:
             ],
             check=False,
         )
+        if result.returncode != 0 or not desktop_installed():
+            raise RuntimeError("LM Studio's desktop app could not be installed with winget.")
         return
     log("Desktop app installer not available; CLI is enough to download and serve Qwen.")
 

@@ -22,6 +22,9 @@ pkill -f "LM Studio" >/dev/null 2>&1 || true
 
 echo "==> Removing app/runtime installations (personal Clover data is preserved)"
 osascript -e 'tell application "Finder" to delete every item of desktop whose name starts with "Clover"' >/dev/null 2>&1 || true
+if command -v brew >/dev/null 2>&1 && brew list --cask lm-studio >/dev/null 2>&1; then
+  brew uninstall --cask --force lm-studio
+fi
 rm -rf \
   "$HOME/Applications/Clover.app" \
   "$HOME/.lmstudio" \
@@ -42,6 +45,11 @@ echo "==> Waiting for Clover and Juno to become ready"
 for _attempt in $(seq 1 240); do
   if response="$(curl -fsS http://127.0.0.1:8765/api/readiness 2>/dev/null)" &&
      [[ "$response" == *'"ready": true'* ]]; then
+    status="$("$ROOT/.venv/bin/job-agent" status)"
+    if [[ "$status" != *'"desktopInstalled": true'* ]]; then
+      echo "Clean install failed: LM Studio desktop app is missing." >&2
+      exit 1
+    fi
     echo "Clean install passed: Clover launched and Juno is ready."
     exit 0
   fi
