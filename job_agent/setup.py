@@ -84,7 +84,46 @@ def _install_desktop(log: Log) -> None:
     log("Desktop app installer not available; CLI is enough to download and serve Qwen.")
 
 
-def run_setup(log: Log = print) -> None:
+def ensure_model(log: Log = print) -> None:
+    cfg = load_config()
+    listed = lms("ls")
+    if cfg.model in listed.stdout or cfg.model.split("/")[-1] in listed.stdout:
+        log(f"{cfg.model} already downloaded - skipping model install")
+        return
+    log(f"Downloading {cfg.model} (hardware-recommended quantization)")
+    got = None
+    for attempt in range(1, MODEL_DOWNLOAD_ATTEMPTS + 1):
+        if attempt > 1:
+            log(
+                f"Resuming model download (attempt {attempt}/{MODEL_DOWNLOAD_ATTEMPTS})"
+            )
+        runner = lms_live if log is print else lms
+        try:
+            got = runner("get", cfg.model, "--yes", timeout=600)
+        except subprocess.TimeoutExpired:
+            got = subprocess.CompletedProcess(
+                args=["lms", "get", cfg.model],
+                returncode=124,
+                stdout="",
+                stderr="Model download timed out.",
+            )
+        if got.returncode == 0:
+            break
+        if attempt < MODEL_DOWNLOAD_ATTEMPTS:
+            log("The download was interrupted. Clover will resume it automatically.")
+            time.sleep(min(30, attempt * 5))
+    if got is None or got.returncode != 0:
+        raise RuntimeError(
+            (got.stderr if got else "")
+            or (got.stdout if got else "")
+            or "Model download failed after four resumable attempts"
+        )
+    output = (got.stdout or got.stderr or "").strip()
+    if output:
+        log(output)
+
+
+def run_setup(log: Log = print, *, download_model: bool = True) -> None:
     cfg = load_config()
     log("Clover setup")
     database = initialize_database()
@@ -102,41 +141,10 @@ def run_setup(log: Log = print) -> None:
         raise RuntimeError(
             bootstrapped.stderr or bootstrapped.stdout or "LM Studio bootstrap failed"
         )
-    listed = lms("ls")
-    if cfg.model in listed.stdout or cfg.model.split("/")[-1] in listed.stdout:
-        log(f"{cfg.model} already downloaded — skipping model install")
+    if download_model:
+        ensure_model(log)
     else:
-        log(f"Downloading {cfg.model} (hardware-recommended quantization)")
-        got = None
-        for attempt in range(1, MODEL_DOWNLOAD_ATTEMPTS + 1):
-            if attempt > 1:
-                log(
-                    f"Resuming model download (attempt {attempt}/{MODEL_DOWNLOAD_ATTEMPTS})"
-                )
-            runner = lms_live if log is print else lms
-            try:
-                got = runner("get", cfg.model, "--yes", timeout=600)
-            except subprocess.TimeoutExpired:
-                got = subprocess.CompletedProcess(
-                    args=["lms", "get", cfg.model],
-                    returncode=124,
-                    stdout="",
-                    stderr="Model download timed out.",
-                )
-            if got.returncode == 0:
-                break
-            if attempt < MODEL_DOWNLOAD_ATTEMPTS:
-                log("The download was interrupted. Clover will resume it automatically.")
-                time.sleep(min(30, attempt * 5))
-        if got is None or got.returncode != 0:
-            raise RuntimeError(
-                (got.stderr if got else "")
-                or (got.stdout if got else "")
-                or "Model download failed after four resumable attempts"
-            )
-        output = (got.stdout or got.stderr or "").strip()
-        if output:
-            log(output)
+        log("Juno's model will finish downloading after Clover opens.")
     ensure_prompt_and_mcp()
     log("Wrote system prompt and MCP config")
     install_desktop(log)

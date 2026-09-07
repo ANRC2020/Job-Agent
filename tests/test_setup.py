@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from job_agent.cli import main as cli_main
 from job_agent.setup import run_setup
 
 
@@ -16,6 +17,11 @@ def completed(code: int = 0, stdout: str = "", stderr: str = ""):
 
 
 class SetupTests(unittest.TestCase):
+    @patch("job_agent.cli.run_setup")
+    def test_cli_can_defer_the_model_until_after_clover_opens(self, setup) -> None:
+        self.assertEqual(0, cli_main(["setup", "--defer-model"]))
+        setup.assert_called_once_with(download_model=False)
+
     @patch("job_agent.setup.install_desktop")
     @patch("job_agent.setup.ensure_prompt_and_mcp")
     @patch("job_agent.setup.time.sleep")

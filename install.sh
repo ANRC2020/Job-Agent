@@ -29,7 +29,7 @@ echo "==> Installing Clover"
 uv pip install --python .venv/bin/python -e "$ROOT"
 
 echo "==> Running setup"
-".venv/bin/job-agent" setup
+".venv/bin/job-agent" setup --defer-model
 
 echo
 echo "Installed Clover to ~/Applications and your Desktop."

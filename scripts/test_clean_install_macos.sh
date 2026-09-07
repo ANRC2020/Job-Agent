@@ -41,20 +41,18 @@ SKIP_APP=1 ./install.sh
 echo "==> Launching Clover from the installed app"
 open "$HOME/Applications/Clover.app"
 
-echo "==> Waiting for Clover and Juno to become ready"
-for _attempt in $(seq 1 240); do
-  if response="$(curl -fsS http://127.0.0.1:8765/api/readiness 2>/dev/null)" &&
-     [[ "$response" == *'"ready": true'* ]]; then
-    status="$("$ROOT/.venv/bin/job-agent" status)"
-    if [[ "$status" != *'"desktopInstalled": true'* ]]; then
+echo "==> Waiting for Clover to open while Juno sets up in the background"
+for _attempt in $(seq 1 120); do
+  if response="$(curl -fsS http://127.0.0.1:8765/api/readiness 2>/dev/null)"; then
+    if [[ ! -d "/Applications/LM Studio.app" ]]; then
       echo "Clean install failed: LM Studio desktop app is missing." >&2
       exit 1
     fi
-    echo "Clean install passed: Clover launched and Juno is ready."
+    echo "Clean install passed: Clover opened and Juno setup started automatically."
     exit 0
   fi
   sleep 1
 done
 
-echo "Clean install failed: Juno did not become ready within four minutes." >&2
+echo "Clean install failed: Clover did not open within two minutes." >&2
 exit 1

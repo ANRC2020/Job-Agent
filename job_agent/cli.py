@@ -27,7 +27,15 @@ def main(argv: list[str] | None = None) -> int:
     app_p.add_argument("--no-window", action="store_true", help="Do not open a window (keep the server only)")
     app_p.add_argument("--no-runtime", action="store_true", help="Do not start or stop LM Studio")
 
-    sub.add_parser("setup", help="Install or reuse LM Studio, Qwen, prompts, tools, and the desktop app")
+    setup_p = sub.add_parser(
+        "setup",
+        help="Install or reuse LM Studio, Qwen, prompts, tools, and the desktop app",
+    )
+    setup_p.add_argument(
+        "--defer-model",
+        action="store_true",
+        help="Open Clover first and finish downloading Juno in the background",
+    )
     sub.add_parser("install-desktop", help="Install Clover to Applications / Desktop")
     sub.add_parser("launch", help="Open the installed Clover desktop app")
     sub.add_parser("start", help="Start the LM Studio daemon, load Qwen, and serve the API")
@@ -41,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     cmd = args.cmd or "app"
 
     if cmd == "setup":
-        run_setup()
+        run_setup(download_model=not bool(getattr(args, "defer_model", False)))
         return 0
     if cmd == "install-desktop":
         install_desktop()

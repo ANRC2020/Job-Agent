@@ -45,7 +45,7 @@ if ($env:CLOVER_WINDOWS_SMOKE_TEST -eq "1") {
     Write-Host "==> Windows smoke test: installing desktop integration without downloading a model"
     Invoke-Checked -FilePath $VenvPython -Arguments @("-m", "job_agent", "install-desktop")
 } else {
-    Invoke-Checked -FilePath $VenvPython -Arguments @("-m", "job_agent", "setup")
+    Invoke-Checked -FilePath $VenvPython -Arguments @("-m", "job_agent", "setup", "--defer-model")
 }
 
 Write-Host ""

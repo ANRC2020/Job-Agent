@@ -39,7 +39,7 @@ from job_agent.readiness import readiness, technical_status
 from job_agent.reflection import reflection_for_stage
 from job_agent.repo_tools import call_tool
 from job_agent.runtime import start_runtime, stop_runtime, switch_model
-from job_agent.setup import run_setup
+from job_agent.setup import ensure_model, run_setup
 from job_agent.storage import (
     add_message,
     add_model_run,
@@ -684,6 +684,11 @@ def serve(
     boot: threading.Thread | None = None
 
     def _boot() -> None:
+        try:
+            ensure_model()
+        except Exception as exc:  # noqa: BLE001
+            print(f"Could not prepare Juno's model: {exc}", flush=True)
+            return
         for attempt in range(1, 4):
             try:
                 session_holder["session"] = start_runtime()

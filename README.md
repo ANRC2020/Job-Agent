@@ -43,9 +43,10 @@ Double-click `install.cmd`, or run:
 install.cmd
 ```
 
-That installs the desktop app, sets up LM Studio only if it is missing, and opens Clover. After
-installation, use the **Clover** shortcut on the Desktop or Start Menu. Clover starts and stops
-Juno automatically; no terminal should remain open.
+That installs the desktop app, sets up LM Studio only if it is missing, and opens Clover without
+waiting for the model download. Juno finishes downloading in the background with status shown
+inside Clover. After installation, use the **Clover** shortcut on the Desktop or Start Menu.
+Clover starts and stops Juno automatically; no terminal should remain open.
 
 ## Browser companion
 
