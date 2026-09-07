@@ -21,6 +21,9 @@ MAX_EXPERIENCES = 8
 MAX_LEARNINGS = 16
 MAX_TOOL_ACTIONS = 10
 VOLATILE_READ_RESULTS = {
+    "search_web",
+    "search_jobs",
+    "visit_page",
     "get_opportunities",
     "get_opportunity",
     "read_my_document",

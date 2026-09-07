@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from job_agent.chat import (
     EMPTY_RESPONSE_FALLBACK,
     MAX_OUTPUT_TOKENS,
+    _job_search_requested,
     _payload,
     _post,
     _run_calls,
@@ -73,8 +74,23 @@ class ToolSurfaceTests(unittest.TestCase):
         self.assertIn("set_opportunity_stage", names)
         self.assertIn("read_my_document", names)
         self.assertIn("search_memory", names)
+        self.assertIn("search_web", names)
+        self.assertIn("search_jobs", names)
+        self.assertIn("visit_page", names)
+        self.assertIn("import_job_posting", names)
         self.assertNotIn("read_repo_file", names)
         self.assertNotIn("create_database_record", names)
+
+    def test_import_job_posting_requires_an_official_source_url(self) -> None:
+        tools = {
+            tool["function"]["name"]: tool["function"]
+            for tool in openai_tools(CHAT_TOOL_NAMES)
+        }
+
+        schema = tools["import_job_posting"]["parameters"]
+        self.assertEqual(["sourceUrl"], schema["required"])
+        self.assertIn("fitSummary", schema["properties"])
+        self.assertIn("concerns", schema["properties"])
 
     def test_every_tool_offered_has_a_description_and_schema(self) -> None:
         for tool in openai_tools(CHAT_TOOL_NAMES):
@@ -201,6 +217,18 @@ class EmptyResponseTests(unittest.TestCase):
         self.assertEqual("clover-juno", payload["model"])
         self.assertTrue(payload["tools"])
         self.assertNotIn("messages", payload)
+
+    def test_explicit_job_search_forces_the_enriched_discovery_tool(self) -> None:
+        messages = [{"role": "user", "content": "Please look for current ML engineer listings"}]
+        self.assertTrue(_job_search_requested(messages))
+        payload = _payload(messages, CHAT_TOOL_NAMES, forced_tool="search_jobs")
+        self.assertEqual("required", payload["tool_choice"])
+        self.assertEqual(["search_jobs"], [tool["name"] for tool in payload["tools"]])
+        self.assertFalse(
+            _job_search_requested(
+                [{"role": "user", "content": "Which direction sounds strongest for me?"}]
+            )
+        )
 
     def test_responses_function_call_is_returned_to_the_model(self) -> None:
         tool_call = {

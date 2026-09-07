@@ -12,6 +12,7 @@ import json
 import re
 from typing import Any
 
+from job_agent.job_urls import normalize_job_url, normalize_web_url
 from job_agent.storage import (
     DEFAULT_PERSON_ID,
     add_progress_event,
@@ -134,6 +135,13 @@ def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in parsed or [] if str(item).strip()]
 
 
+def _public_link(value: Any, *, posting: bool = False) -> str | None:
+    try:
+        return normalize_job_url(value) if posting else normalize_web_url(value)
+    except ValueError:
+        return None
+
+
 def format_location(value: Any) -> str:
     data = _loads(value, {})
     if isinstance(data, str):
@@ -192,11 +200,19 @@ def _process_row(connection, process_id: str, person_id: str = DEFAULT_PERSON_ID
             j.title AS job_title,
             j.description AS job_description,
             j.source_url AS job_source_url,
+            j.apply_url AS job_apply_url,
+            j.source_kind AS job_source_kind,
             j.employment_type AS job_employment_type,
+            j.workplace_type AS job_workplace_type,
+            j.department AS job_department,
+            j.seniority AS job_seniority,
             j.location_json AS job_location_json,
             j.compensation_json AS job_compensation_json,
             j.requirements_json AS job_requirements_json,
             j.posted_at AS job_posted_at,
+            j.last_verified_at AS job_last_verified_at,
+            j.verification_status AS job_verification_status,
+            j.source_metadata_json AS job_source_metadata_json,
             j.status AS job_status,
             o.name AS organization_name,
             o.website AS organization_website,
@@ -225,6 +241,13 @@ def _summarize(row) -> dict[str, Any]:
         "compensation": format_compensation(row["job_compensation_json"]),
         "employmentType": str(row["job_employment_type"] or ""),
         "sourceUrl": str(row["job_source_url"] or ""),
+        "applyUrl": str(row["job_apply_url"] or row["job_source_url"] or ""),
+        "sourceKind": str(row["job_source_kind"] or ""),
+        "workplaceType": str(row["job_workplace_type"] or ""),
+        "department": str(row["job_department"] or ""),
+        "seniority": str(row["job_seniority"] or ""),
+        "verificationStatus": str(row["job_verification_status"] or "unverified"),
+        "lastVerifiedAt": row["job_last_verified_at"],
         "fitSummary": str(row["fit_summary"] or ""),
         "why": why,
         "keyReason": why[0] if why else "",
@@ -255,11 +278,19 @@ def list_opportunities(person_id: str = DEFAULT_PERSON_ID) -> dict[str, Any]:
                 j.title AS job_title,
                 j.description AS job_description,
                 j.source_url AS job_source_url,
+                j.apply_url AS job_apply_url,
+                j.source_kind AS job_source_kind,
                 j.employment_type AS job_employment_type,
+                j.workplace_type AS job_workplace_type,
+                j.department AS job_department,
+                j.seniority AS job_seniority,
                 j.location_json AS job_location_json,
                 j.compensation_json AS job_compensation_json,
                 j.requirements_json AS job_requirements_json,
                 j.posted_at AS job_posted_at,
+                j.last_verified_at AS job_last_verified_at,
+                j.verification_status AS job_verification_status,
+                j.source_metadata_json AS job_source_metadata_json,
                 j.status AS job_status,
                 o.name AS organization_name,
                 o.website AS organization_website,
@@ -356,6 +387,7 @@ def get_opportunity(process_id: str, person_id: str = DEFAULT_PERSON_ID) -> dict
             "description": str(row["job_description"] or ""),
             "requirements": _string_list(row["job_requirements_json"]),
             "postedAt": row["job_posted_at"],
+            "sourceMetadata": _loads(row["job_source_metadata_json"], {}),
             "companyWebsite": str(row["organization_website"] or ""),
             "companyNotes": str(row["organization_notes"] or ""),
             "materials": materials,
@@ -388,8 +420,9 @@ def find_process_by_source_url(
 ) -> dict[str, Any] | None:
     """Find a saved opportunity without creating a thread or changing history."""
     initialize_database()
-    clean = (source_url or "").strip()
-    if not clean:
+    try:
+        clean = normalize_job_url(source_url)
+    except ValueError:
         return None
     with connect() as connection:
         row = connection.execute(
@@ -449,10 +482,20 @@ def save_opportunity(
     company: str = "",
     description: str = "",
     source_url: str = "",
+    apply_url: str = "",
+    source_kind: str = "",
+    external_id: str = "",
     location: Any = None,
     compensation: Any = None,
     employment_type: str = "",
+    workplace_type: str = "",
+    department: str = "",
+    seniority: str = "",
     requirements: Any = None,
+    posted_at: str | None = None,
+    verification_status: str | None = None,
+    last_verified_at: str | None = None,
+    source_metadata: Any = None,
     stage: str = "interested",
     fit_summary: str = "",
     why: Any = None,
@@ -469,14 +512,32 @@ def save_opportunity(
     if not clean_title:
         raise ValueError("An opportunity needs a role title.")
     normalized = normalize_stage(stage)
-    url = (source_url or "").strip() or None
+    url = _public_link(source_url, posting=True)
+    apply = _public_link(apply_url) or url
+    external = (external_id or "").strip() or None
+    verification = (verification_status or "").strip().lower() or None
+    if verification not in {None, "verified", "partial", "unverified", "closed", "failed"}:
+        verification = None
     now = utc_now()
 
     with transaction() as connection:
-        organization_id = _find_or_create_organization(connection, company, company_website.strip() or None)
+        organization_id = _find_or_create_organization(
+            connection,
+            company,
+            _public_link(company_website),
+        )
         job_row = None
         if url:
             job_row = connection.execute("SELECT id FROM job WHERE source_url = ?", (url,)).fetchone()
+        if job_row is None and organization_id and external:
+            job_row = connection.execute(
+                """
+                SELECT id FROM job
+                WHERE organization_id = ? AND external_id = ?
+                LIMIT 1
+                """,
+                (organization_id, external),
+            ).fetchone()
         if job_row is None and organization_id:
             job_row = connection.execute(
                 """
@@ -492,24 +553,39 @@ def save_opportunity(
             "description": (description or "").strip() or None,
             "organization_id": organization_id,
             "source_url": url,
+            "apply_url": apply,
+            "source_kind": (source_kind or "").strip() or None,
+            "external_id": external,
             "employment_type": (employment_type or "").strip() or None,
+            "workplace_type": (workplace_type or "").strip() or None,
+            "department": (department or "").strip() or None,
+            "seniority": (seniority or "").strip() or None,
             "location_json": json_value(location if location is not None else {}),
             "compensation_json": json_value(compensation if compensation is not None else {}),
             "requirements_json": json_value(_string_list(requirements)),
+            "posted_at": (posted_at or "").strip() or None,
+            "verification_status": verification or "unverified",
+            "last_verified_at": (last_verified_at or "").strip() or None,
+            "source_metadata_json": json_value(
+                source_metadata if source_metadata is not None else {}
+            ),
         }
         if job_row is None:
             job_id = new_id()
             connection.execute(
                 """
                 INSERT INTO job(
-                    id, organization_id, title, description, requirements_json,
+                    id, organization_id, external_id, title, description, requirements_json,
                     compensation_json, location_json, employment_type, source_url,
+                    apply_url, source_kind, workplace_type, department, seniority,
+                    posted_at, verification_status, last_verified_at, source_metadata_json,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
                     organization_id,
+                    job_values["external_id"],
                     clean_title,
                     job_values["description"],
                     job_values["requirements_json"],
@@ -517,6 +593,15 @@ def save_opportunity(
                     job_values["location_json"],
                     job_values["employment_type"],
                     url,
+                    job_values["apply_url"],
+                    job_values["source_kind"],
+                    job_values["workplace_type"],
+                    job_values["department"],
+                    job_values["seniority"],
+                    job_values["posted_at"],
+                    job_values["verification_status"],
+                    job_values["last_verified_at"],
+                    job_values["source_metadata_json"],
                     now,
                     now,
                 ),
@@ -528,25 +613,48 @@ def save_opportunity(
                 UPDATE job SET
                     title = ?,
                     description = COALESCE(?, description),
+                    source_url = COALESCE(?, source_url),
+                    external_id = COALESCE(?, external_id),
                     organization_id = COALESCE(?, organization_id),
                     employment_type = COALESCE(?, employment_type),
+                    apply_url = COALESCE(?, apply_url),
+                    source_kind = COALESCE(?, source_kind),
+                    workplace_type = COALESCE(?, workplace_type),
+                    department = COALESCE(?, department),
+                    seniority = COALESCE(?, seniority),
                     location_json = CASE WHEN ? = '{}' THEN location_json ELSE ? END,
                     compensation_json = CASE WHEN ? = '{}' THEN compensation_json ELSE ? END,
                     requirements_json = CASE WHEN ? = '[]' THEN requirements_json ELSE ? END,
+                    posted_at = COALESCE(?, posted_at),
+                    verification_status = COALESCE(?, verification_status),
+                    last_verified_at = COALESCE(?, last_verified_at),
+                    source_metadata_json = CASE WHEN ? = '{}' THEN source_metadata_json ELSE ? END,
                     updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     clean_title,
                     job_values["description"],
+                    url,
+                    job_values["external_id"],
                     organization_id,
                     job_values["employment_type"],
+                    job_values["apply_url"],
+                    job_values["source_kind"],
+                    job_values["workplace_type"],
+                    job_values["department"],
+                    job_values["seniority"],
                     job_values["location_json"],
                     job_values["location_json"],
                     job_values["compensation_json"],
                     job_values["compensation_json"],
                     job_values["requirements_json"],
                     job_values["requirements_json"],
+                    job_values["posted_at"],
+                    verification,
+                    job_values["last_verified_at"],
+                    job_values["source_metadata_json"],
+                    job_values["source_metadata_json"],
                     now,
                     job_id,
                 ),
@@ -973,6 +1081,13 @@ def context_block(process_id: str, person_id: str = DEFAULT_PERSON_ID) -> str:
         "location": detail["location"],
         "compensation": detail["compensation"],
         "sourceUrl": detail["sourceUrl"],
+        "applyUrl": detail["applyUrl"],
+        "sourceKind": detail["sourceKind"],
+        "verificationStatus": detail["verificationStatus"],
+        "lastVerifiedAt": detail["lastVerifiedAt"],
+        "workplaceType": detail["workplaceType"],
+        "department": detail["department"],
+        "seniority": detail["seniority"],
         "yourEarlierTake": {
             "fitSummary": detail["fitSummary"],
             "whyItFits": detail["why"],

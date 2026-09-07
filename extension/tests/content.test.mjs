@@ -25,6 +25,18 @@ async function companion(name) {
   });
   window.CSS ||= {};
   window.CSS.escape ||= (value) => String(value).replace(/["\\]/g, "\\$&");
+  Object.defineProperty(window.HTMLInputElement.prototype, "files", {
+    configurable: true,
+    get() { return this.__testFiles || []; },
+    set(value) { this.__testFiles = value; },
+  });
+  window.DataTransfer = class {
+    constructor() {
+      this.files = [];
+      this.items = { add: (file) => this.files.push(file) };
+    }
+  };
+  window.HTMLFormElement.prototype.checkValidity = () => true;
   let listener;
   window.chrome = {
     runtime: {
@@ -111,5 +123,74 @@ test("undo restores values and navigation clears the undo history", async () => 
   page = instance.send({ type: "CAPTURE_PAGE" });
   assert.equal(page.url, "https://generic.example.test/jobs/43");
   assert.equal(instance.send({ type: "UNDO_FILL" }).restored, 0);
+  instance.dom.window.close();
+});
+
+test("uploads a resume without exposing file paths and undo clears it", async () => {
+  const instance = await companion("generic");
+  const result = instance.send({
+    type: "UPLOAD_FILE",
+    file: {
+      filename: "resume.pdf",
+      mimeType: "application/pdf",
+      content: instance.window.btoa("resume bytes"),
+    },
+  });
+
+  assert.equal(result.uploaded, true);
+  assert.equal(instance.window.document.querySelector("#resume").files[0].name, "resume.pdf");
+  assert.equal(instance.send({ type: "UNDO_FILL" }).restored, 1);
+  assert.equal(instance.window.document.querySelector("#resume").files.length, 0);
+  instance.dom.window.close();
+});
+
+test("submits once only after required fields are complete", async () => {
+  const instance = await companion("generic");
+  let submissions = 0;
+  instance.window.document.querySelector("form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    submissions += 1;
+  });
+
+  const blocked = instance.send({
+    type: "SUBMIT_APPLICATION",
+    actionId: "approval-1",
+    expectedUrl: "https://generic.example.test/jobs/42",
+  });
+  assert.equal(blocked.clicked, false);
+
+  const page = instance.send({ type: "CAPTURE_PAGE" });
+  const byLabel = Object.fromEntries(page.fields.map((field) => [field.label, field.fieldId]));
+  instance.send({
+    type: "FILL_FIELDS",
+    suggestions: [
+      { fieldId: byLabel["What interests you about this role?"], value: "Grounded answer" },
+      { fieldId: byLabel.Country, value: "United States" },
+    ],
+  });
+  instance.send({
+    type: "UPLOAD_FILE",
+    file: {
+      filename: "resume.pdf",
+      mimeType: "application/pdf",
+      content: instance.window.btoa("resume bytes"),
+    },
+  });
+  instance.window.document.querySelector("input[name='consent']").checked = true;
+  instance.window.document.querySelector("form").noValidate = true;
+  const submitted = instance.send({
+    type: "SUBMIT_APPLICATION",
+    actionId: "approval-2",
+    expectedUrl: "https://generic.example.test/jobs/42",
+  });
+  const replayed = instance.send({
+    type: "SUBMIT_APPLICATION",
+    actionId: "approval-2",
+    expectedUrl: "https://generic.example.test/jobs/42",
+  });
+
+  assert.equal(submitted.clicked, true);
+  assert.equal(replayed.clicked, false);
+  assert.equal(submissions, 1);
   instance.dom.window.close();
 });

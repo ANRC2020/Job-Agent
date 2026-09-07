@@ -3,6 +3,8 @@
   globalThis.__cloverCompanionLoaded = true;
 
   const previousValues = new Map();
+  const uploadedFiles = new Map();
+  const submittedActions = new Set();
   let capturedUrl = location.href;
   const BLOCKED_TYPES = new Set([
     "password", "hidden", "file", "submit", "reset", "button", "image",
@@ -98,6 +100,92 @@
     return fields;
   }
 
+  function extractFileFields() {
+    return [...document.querySelectorAll("input[type='file']")]
+      .filter((element) => visible(element) && !element.disabled)
+      .slice(0, 20)
+      .map((element, index) => {
+        const fieldId = `clover-file-${index}`;
+        element.dataset.cloverFileId = fieldId;
+        return {
+          fieldId,
+          label: labelFor(element) || "File upload",
+          accept: element.getAttribute("accept") || "",
+          hasFile: Boolean(element.files?.length),
+          filename: String(element.files?.[0]?.name || "").slice(0, 300),
+        };
+      });
+  }
+
+  function unresolvedRequiredFields() {
+    const controls = [...document.querySelectorAll(
+      "input[required], textarea[required], select[required], [aria-required='true']"
+    )];
+    const unresolved = [];
+    for (const element of controls) {
+      const type = fieldType(element);
+      if (!visible(element) || element.disabled || ["hidden", "submit", "button", "image"].includes(type)) {
+        continue;
+      }
+      let complete;
+      if (type === "checkbox") {
+        complete = element.checked;
+      } else if (type === "radio") {
+        const name = element.getAttribute("name");
+        complete = name
+          ? [...document.querySelectorAll(`input[type='radio'][name="${CSS.escape(name)}"]`)]
+            .some((candidate) => candidate.checked)
+          : element.checked;
+      } else if (type === "file") {
+        complete = Boolean(element.files?.length);
+      } else {
+        complete = Boolean(currentValue(element).trim());
+      }
+      if (!complete) {
+        const label = labelFor(element) || "Required field";
+        unresolved.push({ label, type, sensitive: sensitive(element, label) });
+      }
+    }
+    return unresolved.slice(0, 30);
+  }
+
+  function submitControl() {
+    const candidates = [...document.querySelectorAll("button, input[type='submit']")]
+      .filter((element) => visible(element) && !element.disabled)
+      .map((element) => ({
+        element,
+        label: normalized(textOf(element) || element.value || element.getAttribute("aria-label")),
+      }))
+      .filter(({ label }) => label && !/\b(next|continue|save|review|back|cancel|preview)\b/i.test(label));
+    const explicit = candidates.filter(({ label }) =>
+      /\b(submit|send application|complete application|send)\b/i.test(label)
+    );
+    const usable = explicit.length ? explicit : candidates.filter(
+      ({ element }) => (
+        element.type?.toLowerCase() === "submit"
+        && Boolean(element.closest("form")?.querySelector("input, textarea, select"))
+      )
+    );
+    return {
+      element: usable.length === 1 ? usable[0].element : null,
+      label: usable.length === 1 ? usable[0].label : "",
+      ambiguous: usable.length > 1,
+    };
+  }
+
+  function applicationState() {
+    const control = submitControl();
+    return {
+      fileFields: extractFileFields(),
+      unresolvedRequired: unresolvedRequiredFields(),
+      submit: {
+        available: Boolean(control.element),
+        ambiguous: control.ambiguous,
+        label: control.label,
+      },
+    };
+  }
+
   function jobPosting() {
     const roots = [
       document.querySelector("[itemtype*='JobPosting']"),
@@ -111,6 +199,7 @@
   function jobMetadata() {
     let title = normalized(textOf(document.querySelector("h1")));
     let company = "";
+    let posting = null;
     for (const script of document.querySelectorAll("script[type='application/ld+json']")) {
       try {
         const parsed = JSON.parse(script.textContent || "null");
@@ -119,6 +208,7 @@
           const entries = item?.["@graph"] && Array.isArray(item["@graph"]) ? item["@graph"] : [item];
           for (const entry of entries) {
             if (entry?.["@type"] === "JobPosting") {
+              posting ||= entry;
               title ||= normalized(entry.title);
               company ||= normalized(entry.hiringOrganization?.name);
             }
@@ -128,15 +218,53 @@
         // Invalid page metadata is ignored.
       }
     }
+    const rawLocations = posting?.jobLocation
+      ? (Array.isArray(posting.jobLocation) ? posting.jobLocation : [posting.jobLocation])
+      : [];
+    const locations = rawLocations.map((item) => {
+      const address = item?.address;
+      if (typeof address === "string") return normalized(address);
+      return normalized([
+        address?.addressLocality,
+        address?.addressRegion,
+        address?.addressCountry,
+      ].filter(Boolean).join(", "));
+    }).filter(Boolean);
+    const remote = /telecommute|remote/i.test(String(posting?.jobLocationType || ""));
+    const salary = posting?.baseSalary?.value || {};
     return {
       title: title || normalized(document.title),
       company,
+      companyWebsite: String(posting?.hiringOrganization?.sameAs || ""),
+      location: {
+        text: locations.join("; "),
+        remote,
+        arrangement: remote ? "remote" : "",
+      },
+      compensation: {
+        currency: posting?.baseSalary?.currency || "",
+        min: salary.minValue ?? null,
+        max: salary.maxValue ?? null,
+        period: String(salary.unitText || "").toLowerCase(),
+      },
+      employmentType: Array.isArray(posting?.employmentType)
+        ? posting.employmentType.join(", ")
+        : String(posting?.employmentType || ""),
+      workplaceType: remote ? "Remote" : "",
+      postedAt: String(posting?.datePosted || ""),
+      externalId: String(
+        typeof posting?.identifier === "object"
+          ? posting?.identifier?.value || ""
+          : posting?.identifier || ""
+      ),
     };
   }
 
   function capturePage() {
     if (capturedUrl !== location.href) {
       previousValues.clear();
+      uploadedFiles.clear();
+      submittedActions.clear();
       document.querySelectorAll("[data-clover-filled]").forEach((element) => {
         element.style.outline = "";
         element.style.outlineOffset = "";
@@ -149,8 +277,18 @@
       url: location.href,
       title: metadata.title,
       company: metadata.company,
+      listing: {
+        companyWebsite: metadata.companyWebsite,
+        location: metadata.location,
+        compensation: metadata.compensation,
+        employmentType: metadata.employmentType,
+        workplaceType: metadata.workplaceType,
+        postedAt: metadata.postedAt,
+        externalId: metadata.externalId,
+      },
       postingText: jobPosting(),
       fields: extractFields(),
+      application: applicationState(),
       capturedAt: new Date().toISOString(),
     };
   }
@@ -208,6 +346,86 @@
     return { filled, skipped, canUndo: previousValues.size > 0 };
   }
 
+  function uploadFile(file) {
+    const fields = extractFileFields();
+    const preferred = fields.find((field) => /\b(resume|résumé|cv)\b/i.test(field.label))
+      || (
+        fields.length === 1
+        && /\b(upload|attachment|document|file)\b/i.test(fields[0].label)
+        && !/\bcover\b/i.test(fields[0].label)
+        ? fields[0]
+        : null
+      );
+    if (!preferred) {
+      return { uploaded: false, reason: "Clover could not identify one resume upload field." };
+    }
+    const accepted = preferred.accept.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+    const filename = String(file.filename || "resume.pdf");
+    const mimeType = String(file.mimeType || "application/octet-stream").toLowerCase();
+    const extension = filename.includes(".") ? `.${filename.split(".").pop().toLowerCase()}` : "";
+    if (accepted.length && !accepted.some((value) =>
+      value === extension
+      || value === mimeType
+      || (value.endsWith("/*") && mimeType.startsWith(value.slice(0, -1)))
+    )) {
+      return {
+        uploaded: false,
+        reason: `This field does not accept ${extension || mimeType} resume files.`,
+      };
+    }
+    const element = [...document.querySelectorAll("[data-clover-file-id]")]
+      .find((candidate) => candidate.dataset.cloverFileId === preferred.fieldId);
+    if (!element || element.files?.length) {
+      return { uploaded: false, reason: "That upload field already contains a file." };
+    }
+    const bytes = Uint8Array.from(atob(String(file.content || "")), (char) => char.charCodeAt(0));
+    const candidate = new File(
+      [bytes],
+      filename,
+      { type: mimeType },
+    );
+    const transfer = new DataTransfer();
+    transfer.items.add(candidate);
+    element.files = transfer.files;
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    element.style.outline = "2px solid #5f9f7b";
+    element.style.outlineOffset = "2px";
+    element.dataset.cloverFilled = "true";
+    uploadedFiles.set(preferred.fieldId, element);
+    return { uploaded: true, filename: candidate.name, field: preferred.label, canUndo: true };
+  }
+
+  function submitApplication(actionId, expectedUrl) {
+    const action = String(actionId || "");
+    if (!action || submittedActions.has(action)) {
+      return { clicked: false, reason: "This submission approval has already been used." };
+    }
+    const expected = new URL(String(expectedUrl || ""));
+    const current = new URL(location.href);
+    if (expected.origin !== current.origin || expected.pathname !== current.pathname) {
+      return { clicked: false, reason: "The application page changed after review." };
+    }
+    const unresolved = unresolvedRequiredFields();
+    if (unresolved.length) {
+      return {
+        clicked: false,
+        reason: `Complete required fields first: ${unresolved.slice(0, 3).map((item) => item.label).join(", ")}.`,
+      };
+    }
+    const control = submitControl();
+    if (!control.element || control.ambiguous) {
+      return { clicked: false, reason: "The final submission button is no longer unambiguous." };
+    }
+    const form = control.element.closest("form");
+    if (form && !form.checkValidity()) {
+      return { clicked: false, reason: "The application form still has invalid fields." };
+    }
+    submittedActions.add(action);
+    control.element.click();
+    return { clicked: true, buttonLabel: control.label };
+  }
+
   function undoFill() {
     let restored = 0;
     for (const [id, previous] of previousValues.entries()) {
@@ -221,6 +439,17 @@
       restored += 1;
     }
     previousValues.clear();
+    for (const [id, element] of uploadedFiles.entries()) {
+      if (!element?.isConnected) continue;
+      const transfer = new DataTransfer();
+      element.files = transfer.files;
+      element.value = "";
+      element.style.outline = "";
+      element.style.outlineOffset = "";
+      delete element.dataset.cloverFilled;
+      uploadedFiles.delete(id);
+      restored += 1;
+    }
     return { restored };
   }
 
@@ -231,6 +460,10 @@
       sendResponse(capturePage());
     } else if (message?.type === "FILL_FIELDS") {
       sendResponse(fillFields(message.suggestions));
+    } else if (message?.type === "UPLOAD_FILE") {
+      sendResponse(uploadFile(message.file || {}));
+    } else if (message?.type === "SUBMIT_APPLICATION") {
+      sendResponse(submitApplication(message.actionId, message.expectedUrl));
     } else if (message?.type === "UNDO_FILL") {
       sendResponse(undoFill());
     }

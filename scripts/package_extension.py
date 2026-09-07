@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Generate Clover extension icons and a sideloadable ZIP with no dependencies."""
+"""Generate Clover icons and a Chrome Web Store upload ZIP."""
 
 from __future__ import annotations
 
+import json
 import math
+import re
 import struct
 import sys
 import zipfile
@@ -83,9 +85,25 @@ def generate_icons() -> None:
         (icons / f"icon{size}.png").write_bytes(icon_png(size))
 
 
+def validate_manifest() -> dict[str, object]:
+    manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("manifest_version") != 3:
+        raise ValueError("The browser companion must use Manifest V3.")
+    version = str(manifest.get("version") or "")
+    if not re.fullmatch(r"\d+(?:\.\d+){0,3}", version):
+        raise ValueError("The extension manifest has an invalid store version.")
+    required = {"background.js", "content.js", "sidepanel.html", "sidepanel.js", "styles.css"}
+    missing = sorted(name for name in required if not (EXTENSION / name).is_file())
+    if missing:
+        raise FileNotFoundError(f"Missing extension files: {', '.join(missing)}")
+    return manifest
+
+
 def package() -> Path:
     generate_icons()
-    destination = ROOT / "dist" / "clover-browser-companion.zip"
+    manifest = validate_manifest()
+    version = str(manifest["version"])
+    destination = ROOT / "dist" / f"clover-browser-companion-{version}.zip"
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(EXTENSION.rglob("*")):
@@ -94,6 +112,8 @@ def package() -> Path:
                 continue
             if relative.parts[0] == "icons" or relative.as_posix() in INCLUDED:
                 archive.write(path, relative.as_posix())
+    stable = destination.with_name("clover-browser-companion.zip")
+    stable.write_bytes(destination.read_bytes())
     return destination
 
 

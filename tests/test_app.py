@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 from unittest.mock import patch
 
 from job_agent.app import _bind_server, _model_messages
+from job_agent.autonomy import list_pending_actions, queue_approval
 from job_agent.storage import initialize_database
 
 
@@ -114,6 +115,31 @@ class AppApiTests(unittest.TestCase):
         self.assertIn("funnel", strategy)
         self.assertEqual([], settings["pendingActions"])
 
+    def test_opportunity_api_returns_enriched_listing_and_apply_link(self) -> None:
+        created = json.loads(
+            self.post(
+                "/api/opportunities",
+                {
+                    "role": "ML Engineer",
+                    "company": "Acme",
+                    "sourceUrl": "https://jobs.example.test/roles/1",
+                    "applyUrl": "https://jobs.example.test/roles/1/apply",
+                    "sourceKind": "company_careers",
+                    "workplaceType": "Remote",
+                    "department": "AI",
+                    "requirements": ["Python"],
+                    "verificationStatus": "verified",
+                    "lastVerifiedAt": "2026-09-07T00:00:00+00:00",
+                },
+            )
+        )
+
+        detail = self.get(f"/api/opportunities/{created['id']}")
+
+        self.assertEqual("https://jobs.example.test/roles/1/apply", detail["applyUrl"])
+        self.assertEqual("verified", detail["verificationStatus"])
+        self.assertEqual(["Python"], detail["requirements"])
+
     def test_extension_routes_require_a_paired_bearer_token(self) -> None:
         pairing = json.loads(self.post("/api/settings/extension/pairing-code", {}))
         paired = json.loads(self.post("/api/extension/pair", {"code": pairing["code"]}))
@@ -186,6 +212,25 @@ class AppApiTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as rejected_page:
             urlopen(browser_page, timeout=5)
         self.assertEqual(403, rejected_page.exception.code)
+
+    def test_browser_submission_cannot_be_approved_away_from_live_page(self) -> None:
+        action_id = queue_approval(
+            action_name="submit_application",
+            arguments={"url": "https://jobs.example.test/apply"},
+            explanation="Submit the application.",
+        )
+        request = Request(
+            self.base + f"/api/approvals/{action_id}",
+            data=json.dumps({"approved": True}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with self.assertRaises(HTTPError) as rejected:
+            urlopen(request, timeout=5)
+
+        self.assertEqual(409, rejected.exception.code)
+        self.assertEqual(action_id, list_pending_actions()[0]["id"])
 
 
 if __name__ == "__main__":

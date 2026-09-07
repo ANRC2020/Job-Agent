@@ -67,7 +67,11 @@ TABLE_GUIDANCE = {
         "storage_uri points to the local file; do not place binary content in text_content."
     ),
     "organization": "An employer or recruiting organization, shared by one or more jobs.",
-    "job": "The normalized job posting: title, description, requirements, compensation, location, and source URL.",
+    "job": (
+        "Verified source facts for one normalized posting: title, description, requirements, "
+        "compensation, location, direct listing/application URLs, provider metadata, and freshness. "
+        "Juno's fit interpretation belongs in job_process, never source_metadata_json."
+    ),
     "job_process": (
         "The user's end-to-end pursuit of one job. current_stage is the present state; "
         "also append a job_stage_event whenever the stage changes. fit_summary, why_json, "

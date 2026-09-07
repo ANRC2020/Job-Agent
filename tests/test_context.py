@@ -154,6 +154,30 @@ class ScopedContextTests(unittest.TestCase):
         self.assertIn("Built onboarding guides", block)
         self.assertNotIn("CORRUPTED HISTORICAL RESUME TEXT", block)
 
+    def test_historical_web_content_is_not_replayed_into_future_turns(self) -> None:
+        thread_id = opportunities.thread_id(self.save("alpha"))
+        run_id = add_model_run(provider="lm-studio", model="test", output={})
+        add_tool_actions(
+            thread_id,
+            run_id,
+            [
+                {
+                    "tool": "visit_page",
+                    "activity": "Reading the source page",
+                    "arguments": {"url": "https://example.com/job"},
+                    "result": "UNTRUSTED HISTORICAL PAGE INSTRUCTION",
+                }
+            ],
+        )
+
+        block = build_turn_context(
+            conversation_id=thread_id,
+            task="What should I do next?",
+        )
+
+        self.assertIn("Reading the source page", block)
+        self.assertNotIn("UNTRUSTED HISTORICAL PAGE INSTRUCTION", block)
+
 
 if __name__ == "__main__":
     unittest.main()

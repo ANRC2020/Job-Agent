@@ -34,6 +34,27 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
     chat.prefill(prompt);
   }
 
+  async function applyWithJuno() {
+    const target = data.applyUrl || data.sourceUrl;
+    if (!target) {
+      talk("Help me find the official application page for this role.");
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = target;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.click();
+    if (!["applying", "applied", "interviewing", "offer"].includes(data.stage)) {
+      await api.post(`/api/opportunities/${id}/stage`, {
+        stage: "applying",
+        reason: "Opened the direct application with Juno",
+      });
+      nav.refreshCounts();
+    }
+    reload("I opened the direct application. Use the Clover Browser Companion there and I'll prepare each step with you.");
+  }
+
   // --- header ---------------------------------------------------------
 
   inner.append(
@@ -73,6 +94,20 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
           { href: data.sourceUrl, target: "_blank", rel: "noreferrer" },
           icon("link", "icon-sm"),
           "View the posting"
+        )
+      )
+    );
+  }
+  if (data.applyUrl && data.applyUrl !== data.sourceUrl) {
+    header.append(
+      el(
+        "div",
+        { class: "meta-row" },
+        el(
+          "a",
+          { href: data.applyUrl, target: "_blank", rel: "noreferrer" },
+          icon("link", "icon-sm"),
+          "Open direct application"
         )
       )
     );
@@ -140,6 +175,7 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
   if (data.stage === "suggested") {
     actions.append(
       act("I'm interested", () => move("interested", { message: "Saved. Take it at whatever pace suits you." }), true),
+      act("Apply with Juno", applyWithJuno),
       act("Not for me", () =>
         move("closed", {
           outcome: "not_a_fit",
@@ -150,14 +186,7 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
     );
   } else if (data.stage === "interested") {
     actions.append(
-      act(
-        "Prepare the application",
-        () =>
-          move("applying", {}).then(() =>
-            nav.openOpportunity(id, "Let's get this ready. I'll start from your resume.")
-          ),
-        true
-      ),
+      act("Apply with Juno", applyWithJuno, true),
       act("I've applied", () => move("applied", { message: "Logged. Nothing to do now but wait." })),
       act("Not for me", () =>
         move("closed", { outcome: "not_a_fit", message: "Closed out. That's a decision, not a loss." })
@@ -165,7 +194,8 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
     );
   } else if (data.stage === "applying") {
     actions.append(
-      act("I've applied", () => move("applied", { message: "Sent. That's the hard part done." }), true),
+      act("Continue application", applyWithJuno, true),
+      act("I've applied", () => move("applied", { message: "Sent. That's the hard part done." })),
       act("Work on it with Juno", () => talk("Let's keep working on my application for this role."))
     );
   } else if (data.stage === "applied") {
@@ -199,6 +229,35 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
   // --- the record -----------------------------------------------------
 
   const record = el("div", { class: "stack" });
+  const listingFacts = [
+    data.postedAt ? `Posted: ${when(data.postedAt)}` : "",
+    data.verificationStatus
+      ? `Source status: ${data.verificationStatus}${data.lastVerifiedAt ? ` · checked ${when(data.lastVerifiedAt)}` : ""}`
+      : "",
+    data.sourceKind ? `Source: ${data.sourceKind.replaceAll("_", " ")}` : "",
+  ].filter(Boolean);
+  if (listingFacts.length || data.requirements.length) {
+    record.append(
+      sectionBlock(
+        "Listing details",
+        null,
+        el(
+          "div",
+          { class: "stack stack-2" },
+          listingFacts.map((item) => el("div", { class: "small muted", text: item })),
+          data.requirements.length
+            ? el(
+                "div",
+                { class: "stack stack-2", style: "margin-top: 8px" },
+                el("strong", { text: "Requirements" }),
+                data.requirements.map((item) => el("div", { text: `— ${item}` }))
+              )
+            : null
+        ),
+        { open: true }
+      )
+    );
+  }
   if (data.description) {
     record.append(
       sectionBlock(

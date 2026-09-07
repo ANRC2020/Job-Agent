@@ -1,11 +1,14 @@
 <!doctype html>
 <main>
   <h1>Developer Advocate</h1>
+  <form>
   <label for="existing">Current employer</label><input id="existing" value="AnySoft">
   <label for="motivation">What interests you about this role?</label>
-  <textarea id="motivation"></textarea>
+  <textarea id="motivation" required></textarea>
   <label for="country">Country</label>
-  <select id="country"><option value="">Choose</option><option value="US">United States</option></select>
-  <label><input type="checkbox" name="consent"> I agree to the privacy policy</label>
+  <select id="country" required><option value="">Choose</option><option value="US">United States</option></select>
+  <label for="resume">Resume</label><input id="resume" type="file" accept=".pdf,.doc,.docx" required>
+  <label><input type="checkbox" name="consent" required> I agree to the privacy policy</label>
   <button id="submit" type="submit">Send</button>
+  </form>
 </main>

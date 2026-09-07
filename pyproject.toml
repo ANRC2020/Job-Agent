@@ -7,9 +7,14 @@ name = "job-agent"
 version = "0.1.0"
 description = "Clover desktop app with Juno, a local job-search assistant powered by LM Studio."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "Clover" }]
-dependencies = ["pywebview>=5.0", "pypdf>=5.0"]
+dependencies = [
+    "ddgs>=9.16,<10",
+    "pywebview>=5.0",
+    "pypdf>=5.0",
+    "trafilatura>=2.0,<3",
+]
 
 [project.scripts]
 job-agent = "job_agent.cli:main"

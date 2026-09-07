@@ -6,6 +6,8 @@ let permissionOrigin = null;
 let captureTimer = null;
 let junoReady = false;
 let paired = false;
+let submissionActionId = null;
+let capturedUrl = "";
 
 async function message(type, extra = {}) {
   const response = await chrome.runtime.sendMessage({ type, ...extra });
@@ -34,6 +36,8 @@ function setConnected(connected, ready = false) {
 function applyJunoGate() {
   elements.analyze.disabled = !junoReady || elements.analyze.dataset.busy === "true";
   elements.fill.disabled = !junoReady || elements.fill.dataset.busy === "true";
+  elements["upload-resume"].disabled = !paired || elements["upload-resume"].dataset.busy === "true";
+  elements["review-submit"].disabled = !paired || elements["review-submit"].dataset.busy === "true";
   elements.question.disabled = !junoReady;
   const chatButton = elements["chat-form"].querySelector("button");
   chatButton.disabled = !junoReady || chatButton.dataset.busy === "true";
@@ -82,7 +86,13 @@ async function capture() {
       notice("Page access stays limited to this site.");
       return;
     }
+    if (capturedUrl && capturedUrl !== result.url && submissionActionId) {
+      message("CANCEL_SUBMISSION", { actionId: submissionActionId }).catch(() => {});
+      submissionActionId = null;
+      show(elements["submit-review-card"], false);
+    }
     page = result;
+    capturedUrl = page.url;
     permissionOrigin = null;
     show(elements.permission, false);
     show(elements["page-card"]);
@@ -90,8 +100,13 @@ async function capture() {
     elements["page-title"].textContent = page.title || "Untitled page";
     const details = [page.company, `${page.fields?.length || 0} safe fields`].filter(Boolean);
     elements["page-meta"].textContent = details.join(" · ");
-    show(elements["application-card"], Boolean(page.fields?.length));
-    elements["field-count"].textContent = `${page.fields?.length || 0} safe application fields`;
+    const fileCount = page.application?.fileFields?.length || 0;
+    const isApplication = Boolean(page.fields?.length || fileCount || page.application?.submit?.available);
+    show(elements["application-card"], isApplication);
+    elements["field-count"].textContent = [
+      `${page.fields?.length || 0} safe fields`,
+      fileCount ? `${fileCount} file upload${fileCount === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join(" · ");
     notice("This capture is temporary unless you save the opportunity.");
   } catch (error) {
     notice(error.message, true);
@@ -165,9 +180,78 @@ elements.fill.addEventListener("click", () => {
     }
     const result = await message("FILL_FIELDS", { suggestions: generated.suggestions });
     show(elements.undo, Boolean(result.canUndo));
-    notice(`Filled ${result.filled} fields. Review every answer before submitting.`);
     await capture();
+    notice(`Filled ${result.filled} fields. Review every answer before continuing.`);
   });
+});
+
+elements["upload-resume"].addEventListener("click", () => {
+  withButton(elements["upload-resume"], async () => {
+    const result = await message("UPLOAD_RESUME");
+    if (!result.uploaded) throw new Error(result.reason || "The resume could not be uploaded.");
+    show(elements.undo, Boolean(result.canUndo));
+    await capture();
+    notice(`Added ${result.filename} to ${result.field}. Review the file before continuing.`);
+  });
+});
+
+elements["review-submit"].addEventListener("click", () => {
+  withButton(elements["review-submit"], async () => {
+    await capture();
+    const review = await message("REQUEST_SUBMISSION");
+    submissionActionId = review.actionId;
+    elements["submit-review-copy"].textContent =
+      `${review.explanation} Safe values are summarized below; review manual and sensitive answers in the page itself.`;
+    const completedFields = (page.fields || [])
+      .filter((field) => String(field.currentValue || "").trim())
+      .map((field) => `${field.label || "Field"}: ${String(field.currentValue).slice(0, 160)}`);
+    const attachedFiles = (page.application?.fileFields || [])
+      .filter((field) => field.hasFile)
+      .map((field) => `${field.label || "Attachment"}: ${field.filename || "file attached"}`);
+    const details = [
+      ...completedFields.slice(0, 10),
+      ...attachedFiles.slice(0, 5),
+      completedFields.length > 10 ? `${completedFields.length - 10} more completed fields` : "",
+      `Final button: ${review.buttonLabel || "Submit"}`,
+    ].filter(Boolean);
+    elements["submit-review-details"].replaceChildren(
+      ...details.map((text) => {
+        const item = document.createElement("li");
+        item.textContent = text;
+        return item;
+      }),
+    );
+    show(elements["submit-review-card"]);
+    notice("Review the application in the page. Nothing has been sent yet.");
+  });
+});
+
+elements["confirm-submit"].addEventListener("click", () => {
+  if (!submissionActionId) return;
+  withButton(elements["confirm-submit"], async () => {
+    const actionId = submissionActionId;
+    const result = await message("CONFIRM_SUBMISSION", { actionId });
+    submissionActionId = null;
+    show(elements["submit-review-card"], false);
+    notice(
+      `Clicked “${result.buttonLabel || "Submit"}”. Confirm the employer page shows that it was received.`,
+    );
+  });
+});
+
+elements["cancel-submit"].addEventListener("click", async () => {
+  if (!submissionActionId) {
+    show(elements["submit-review-card"], false);
+    return;
+  }
+  try {
+    await message("CANCEL_SUBMISSION", { actionId: submissionActionId });
+    submissionActionId = null;
+    show(elements["submit-review-card"], false);
+    notice("Submission canceled. Nothing was sent.");
+  } catch (error) {
+    notice(error.message, true);
+  }
 });
 
 elements.undo.addEventListener("click", async () => {
@@ -198,6 +282,12 @@ chrome.runtime.onMessage.addListener((incoming) => {
   if (incoming?.type !== "PAGE_CHANGED") return;
   clearTimeout(captureTimer);
   captureTimer = setTimeout(capture, 500);
+});
+
+addEventListener("pagehide", () => {
+  if (submissionActionId) {
+    message("CANCEL_SUBMISSION", { actionId: submissionActionId }).catch(() => {});
+  }
 });
 
 applyJunoGate();

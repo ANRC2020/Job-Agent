@@ -95,8 +95,8 @@ function originPattern(url) {
   return `${parsed.protocol}//${parsed.host}/*`;
 }
 
-async function hasSiteAccess() {
-  const tab = await activeTab();
+async function hasSiteAccess(selectedTab = null) {
+  const tab = selectedTab || await activeTab();
   const origin = originPattern(tab.url);
   if (!origin) return { allowed: false, origin: null, unsupported: true, url: tab.url };
   return {
@@ -114,9 +114,9 @@ async function ensureContentScript(tabId) {
   }
 }
 
-async function capturePage() {
-  const tab = await activeTab();
-  const access = await hasSiteAccess();
+async function capturePage(selectedTab = null) {
+  const tab = selectedTab || await activeTab();
+  const access = await hasSiteAccess(tab);
   if (!access.allowed) {
     return {
       needsPermission: !access.unsupported,
@@ -129,10 +129,14 @@ async function capturePage() {
   return chrome.tabs.sendMessage(tab.id, { type: "CAPTURE_PAGE" });
 }
 
-async function sendToPage(message) {
-  const tab = await activeTab();
+async function sendToPage(message, selectedTab = null) {
+  const tab = selectedTab || await activeTab();
   await ensureContentScript(tab.id);
   return chrome.tabs.sendMessage(tab.id, message);
+}
+
+function submissionSessionKey(actionId) {
+  return `cloverSubmission:${String(actionId || "")}`;
 }
 
 async function updateBadge() {
@@ -199,6 +203,66 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
       case "FILL_FIELDS":
         return sendToPage({ type: "FILL_FIELDS", suggestions: message.suggestions || [] });
+      case "UPLOAD_RESUME": {
+        const file = await cloverRequest("/api/extension/application-document?kind=resume");
+        return sendToPage({ type: "UPLOAD_FILE", file });
+      }
+      case "REQUEST_SUBMISSION": {
+        const tab = await activeTab();
+        const page = await capturePage(tab);
+        const review = await cloverRequest("/api/extension/submission/request", {
+          method: "POST",
+          body: { page },
+        });
+        await chrome.storage.session.set({
+          [submissionSessionKey(review.actionId)]: { tabId: tab.id },
+        });
+        return review;
+      }
+      case "CANCEL_SUBMISSION": {
+        const result = await cloverRequest("/api/extension/submission/cancel", {
+          method: "POST",
+          body: { actionId: message.actionId },
+        });
+        await chrome.storage.session.remove(submissionSessionKey(message.actionId));
+        return result;
+      }
+      case "CONFIRM_SUBMISSION": {
+        const key = submissionSessionKey(message.actionId);
+        const stored = (await chrome.storage.session.get(key))[key];
+        const tab = await activeTab();
+        if (!stored || stored.tabId !== tab.id) {
+          throw new Error("Return to the application tab and review it again before submitting.");
+        }
+        const page = await capturePage(tab);
+        const approval = await cloverRequest("/api/extension/submission/approve", {
+          method: "POST",
+          body: { actionId: message.actionId, page },
+        });
+        await chrome.storage.session.remove(key);
+        let submitted;
+        try {
+          submitted = await sendToPage({
+            type: "SUBMIT_APPLICATION",
+            actionId: approval.actionId,
+            expectedUrl: approval.expectedUrl,
+          }, tab);
+        } catch (error) {
+          await cloverRequest("/api/extension/submission/complete", {
+            method: "POST",
+            body: { actionId: approval.actionId, succeeded: false },
+          }).catch(() => {});
+          throw error;
+        }
+        await cloverRequest("/api/extension/submission/complete", {
+          method: "POST",
+          body: { actionId: approval.actionId, succeeded: Boolean(submitted?.clicked) },
+        });
+        if (!submitted?.clicked) {
+          throw new Error(submitted?.reason || "The application could not be submitted.");
+        }
+        return submitted;
+      }
       case "UNDO_FILL":
         return sendToPage({ type: "UNDO_FILL" });
       default:

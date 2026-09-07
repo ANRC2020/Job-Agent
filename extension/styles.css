@@ -79,7 +79,12 @@ button { width: auto; cursor: pointer; font-weight: 600; }
 button:disabled { cursor: wait; opacity: .55; }
 button.primary { border-color: var(--clover); background: var(--clover); color: #fff; }
 button.primary:hover { background: var(--clover-dark); }
+button.danger { border-color: #a14f48; background: #a14f48; color: #fff; }
+button.danger:hover { background: #873f39; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.review-action { width: 100%; margin-top: 10px; }
+.warning { color: #8b5b32; }
+ul { margin: 0 0 12px; padding-left: 20px; color: var(--muted); }
 .response { white-space: pre-wrap; }
 #notice {
   min-height: 20px;

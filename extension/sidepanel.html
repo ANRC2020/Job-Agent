@@ -46,12 +46,26 @@
     <section id="application-card" class="card hidden">
       <div class="eyebrow">Application form</div>
       <h1 id="field-count">Application questions</h1>
-      <p>Juno fills safe empty fields from your resume and confirmed context. Review everything before submitting.</p>
+      <p>Juno fills safe empty fields from your resume and confirmed context. On multi-page forms, continue in the page and Juno will prepare each step.</p>
       <label for="fill-instructions">Optional guidance</label>
       <textarea id="fill-instructions" rows="2" placeholder="Keep answers concise, emphasize customer education…"></textarea>
       <div class="actions">
         <button id="fill" class="primary" type="button">Generate and fill</button>
+        <button id="upload-resume" type="button">Upload resume</button>
         <button id="undo" class="hidden" type="button">Undo fill</button>
+      </div>
+      <button id="review-submit" class="review-action" type="button">Review final submission</button>
+    </section>
+
+    <section id="submit-review-card" class="card hidden">
+      <div class="eyebrow">Final approval</div>
+      <h1>Ready to send?</h1>
+      <p id="submit-review-copy"></p>
+      <ul id="submit-review-details"></ul>
+      <p class="warning">Submitting sends your information and uploaded files to the employer. Clover will use this approval once.</p>
+      <div class="actions">
+        <button id="confirm-submit" class="danger" type="button">Submit application now</button>
+        <button id="cancel-submit" type="button">Cancel</button>
       </div>
     </section>
 

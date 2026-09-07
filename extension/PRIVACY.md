@@ -8,6 +8,8 @@ Clover Browser Companion is local-first. It communicates only with the Clover de
 After a user grants access for the current site, the extension can read visible job-posting text,
 basic page metadata, and supported application-field labels, constraints, and current values. It
 excludes known sensitive and unsupported field categories before sending page context to Clover.
+When the user chooses **Upload resume**, the original active resume file travels only from Clover's
+local data folder through the loopback service to the selected page's resume or CV input.
 
 ## Data it stores
 
@@ -25,5 +27,8 @@ permissions in Chromium, disconnect locally from the extension, or revoke a conn
 Settings. Passive browsing is not captured. A page is inspected only while the Clover side panel is
 being used.
 
-Saving an opportunity is a separate explicit action. Autofill never submits a form and provides an
-Undo action for fields changed during the current page session.
+Saving an opportunity is a separate explicit action. Autofill and resume attachment provide an Undo
+action during the current page session and never submit by themselves. Final submission is a
+separate one-time approval bound to the reviewed page; Clover rechecks required fields immediately
+before clicking one unambiguous submit control. Because employer sites vary, the user must confirm
+the resulting page says the application was received.

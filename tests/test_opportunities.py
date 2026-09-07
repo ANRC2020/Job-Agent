@@ -60,6 +60,40 @@ class OpportunityTests(unittest.TestCase):
             opp.get_opportunity(first)["fitSummary"],
         )
 
+    def test_tracking_and_apply_url_variants_deduplicate_to_one_posting(self) -> None:
+        first = self.save(
+            source_url="https://EXAMPLE.com/job/1/apply?utm_source=email&gh_jid=42"
+        )
+        second = opp.save_opportunity(
+            title="Customer Education Manager",
+            company="Fathom",
+            source_url="https://example.com/job/1?gh_jid=42",
+        )
+
+        self.assertEqual(first, second["id"])
+        self.assertEqual(
+            "https://example.com/job/1?gh_jid=42",
+            opp.get_opportunity(first)["sourceUrl"],
+        )
+
+    def test_external_source_id_survives_a_changed_posting_url(self) -> None:
+        first = self.save(
+            source_url="https://example.com/job/old",
+            external_id="ats-42",
+        )
+        second = opp.save_opportunity(
+            title="Customer Education Manager",
+            company="Fathom",
+            source_url="https://example.com/job/new",
+            external_id="ats-42",
+        )
+
+        self.assertEqual(first, second["id"])
+        self.assertEqual(
+            "https://example.com/job/new",
+            opp.get_opportunity(first)["sourceUrl"],
+        )
+
     def test_juno_reasoning_is_visible_on_the_summary(self) -> None:
         process_id = self.save(
             why=["You built onboarding docs from scratch"],
@@ -71,6 +105,47 @@ class OpportunityTests(unittest.TestCase):
         self.assertEqual("You built onboarding docs from scratch", detail["keyReason"])
         self.assertEqual("They want curriculum design on paper", detail["mainConcern"])
         self.assertEqual(["Small team"], detail["standouts"])
+
+    def test_verified_listing_facts_and_direct_application_link_are_preserved(self) -> None:
+        process_id = self.save(
+            apply_url="https://example.com/job/1/apply",
+            source_kind="greenhouse",
+            workplace_type="hybrid",
+            department="Machine Learning",
+            seniority="senior",
+            requirements=["Python", "Distributed systems"],
+            posted_at="2026-09-01T00:00:00+00:00",
+            verification_status="verified",
+            last_verified_at="2026-09-07T00:00:00+00:00",
+            source_metadata={"externalId": "job-1"},
+        )
+
+        detail = opp.get_opportunity(process_id)
+
+        self.assertEqual("https://example.com/job/1/apply", detail["applyUrl"])
+        self.assertEqual("greenhouse", detail["sourceKind"])
+        self.assertEqual("verified", detail["verificationStatus"])
+        self.assertEqual(["Python", "Distributed systems"], detail["requirements"])
+        self.assertEqual({"externalId": "job-1"}, detail["sourceMetadata"])
+
+        opp.save_opportunity(
+            title="Customer Education Manager",
+            company="Fathom",
+            source_url="https://example.com/job/1",
+            fit_summary="Strong fit after reviewing the verified source.",
+        )
+        refreshed = opp.get_opportunity(process_id)
+        self.assertEqual("verified", refreshed["verificationStatus"])
+        self.assertEqual({"externalId": "job-1"}, refreshed["sourceMetadata"])
+
+    def test_non_web_application_links_are_not_exposed(self) -> None:
+        process_id = self.save(
+            source_url="javascript:alert(1)",
+            apply_url="file:///tmp/application",
+        )
+        detail = opp.get_opportunity(process_id)
+        self.assertEqual("", detail["sourceUrl"])
+        self.assertEqual("", detail["applyUrl"])
 
     def test_stage_history_is_appended_never_rewritten(self) -> None:
         process_id = self.save()

@@ -2,8 +2,9 @@
 
 A calm, local-first career companion. **Juno** is the assistant inside it — she learns what you're
 looking for, tells you honestly what she thinks of a role, and keeps track of everything so you
-don't have to. Nothing leaves your machine: Juno runs Qwen through
-[LM Studio](https://lmstudio.ai/).
+don't have to. Your profile, documents, conversations, and model inference stay on your machine:
+Juno runs Qwen through [LM Studio](https://lmstudio.ai/). When you ask Juno to search or open a
+public page, only the search terms or requested URL are sent to those public web services.
 
 ## How it works
 
@@ -48,14 +49,35 @@ waiting for the model download. Juno finishes downloading in the background with
 inside Clover. After installation, use the **Clover** shortcut on the Desktop or Start Menu.
 Clover starts and stops Juno automatically; no terminal should remain open.
 
+## Live web and job search
+
+Juno can search the current public web without an account or API key. Job searches prioritize
+official company career pages and their public applicant-tracking pages while filtering out job
+aggregators. Clover opens and verifies promising source pages, extracts the full description,
+requirements, location, workplace type, employment type, compensation, posting date, and direct
+application URL when available, then saves readable roles as Suggested opportunities. Source facts
+and freshness remain separate from Juno's resume-grounded fit assessment.
+
+Clover bundles the MIT-licensed [DDGS](https://github.com/deedy5/ddgs) metasearch library for this
+read-only search layer, then reads supported applicant systems through their official public job
+feeds. Web pages are treated as untrusted source material and cannot authorize submissions or
+other external actions.
+
 ## Browser companion
 
 The optional Chromium extension brings Juno into the job page you are viewing. It can assess the
-role, answer page-aware questions, save the opportunity when you ask, and fill safe empty
-application fields without ever submitting.
+role, answer page-aware questions, save the opportunity when you ask, fill safe empty application
+fields, and attach your locally stored resume. On the final page it can submit once only after you
+review the live form and give explicit one-time confirmation. Sensitive questions remain manual,
+and Clover asks you to verify the employer's success page.
 
-Load the extension from the repository's `extension` folder, then create a one-time pairing code
-under **Clover → Settings → Browser companion**. Site access is requested one site at a time and
+Each opportunity has an **Apply with Juno** action. Clover opens the verified direct application
+link, moves the role into Applying, and keeps the posting, tailored materials, notes, stage history,
+and role-specific conversation together.
+
+Once published, install the extension from its Chrome Web Store listing, then create a one-time
+pairing code under **Clover → Settings → Browser companion**. During development it can still be
+loaded from the repository's `extension` folder. Site access is requested one site at a time and
 page captures remain temporary by default. See the [browser companion instructions](extension/README.md).
 
 ## Local data

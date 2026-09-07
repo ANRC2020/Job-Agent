@@ -31,6 +31,10 @@ class AutonomyTests(unittest.TestCase):
 
     def test_actions_have_safe_default_classes(self) -> None:
         self.assertEqual("automatic_read", action_class("search_memory"))
+        self.assertEqual("automatic_read", action_class("search_web"))
+        self.assertEqual("automatic_local_record", action_class("search_jobs"))
+        self.assertEqual("automatic_local_record", action_class("import_job_posting"))
+        self.assertEqual("automatic_read", action_class("visit_page"))
         self.assertEqual("automatic_local_record", action_class("save_opportunity"))
         self.assertEqual("review_required_inference", action_class("note_observation"))
         self.assertEqual("approval_required", action_class("send_email"))

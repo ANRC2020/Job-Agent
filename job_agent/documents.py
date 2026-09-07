@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import mimetypes
 import re
 import zipfile
 import zlib
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 try:
@@ -368,3 +370,41 @@ def document_text(
         return ""
     text = str(row["text_content"] or "")
     return text[:limit]
+
+
+def document_file(
+    *,
+    kind: str = "resume",
+    person_id: str = DEFAULT_PERSON_ID,
+) -> dict[str, Any] | None:
+    """Return the active source file for a trusted local UI integration."""
+    initialize_database()
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT filename, storage_uri, mime_type
+            FROM person_document
+            WHERE person_id = ? AND kind = ? AND status = 'active'
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            (person_id, kind),
+        ).fetchone()
+    if row is None:
+        return None
+    path = Path(str(row["storage_uri"])).resolve()
+    try:
+        path.relative_to(documents_dir().resolve())
+    except ValueError:
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if not data or len(data) > MAX_BYTES:
+        return None
+    filename = str(row["filename"] or path.name)
+    mime_type = str(row["mime_type"] or "").strip()
+    if not mime_type:
+        mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return {"filename": filename, "mimeType": mime_type, "data": data}

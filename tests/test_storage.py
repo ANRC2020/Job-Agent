@@ -48,11 +48,13 @@ class StorageTests(unittest.TestCase):
                 "004_behavioral_learning.sql",
                 "005_browser_extension.sql",
                 "006_conversation_compaction.sql",
+                "007_opportunity_enrichment.sql",
+                "008_job_external_identity.sql",
             ],
             first["migrationsApplied"],
         )
         self.assertEqual([], second["migrationsApplied"])
-        self.assertEqual(6, database_status()["schemaVersion"])
+        self.assertEqual(8, database_status()["schemaVersion"])
 
     def test_all_three_domains_are_installed(self) -> None:
         initialize_database()
@@ -219,6 +221,8 @@ class StorageTests(unittest.TestCase):
                 "004_behavioral_learning.sql",
                 "005_browser_extension.sql",
                 "006_conversation_compaction.sql",
+                "007_opportunity_enrichment.sql",
+                "008_job_external_identity.sql",
             ],
             result["migrationsApplied"],
         )

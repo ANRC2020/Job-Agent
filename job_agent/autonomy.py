@@ -16,6 +16,8 @@ from job_agent.storage import (
 )
 
 AUTOMATIC_READS = {
+    "search_web",
+    "visit_page",
     "get_opportunities",
     "get_opportunity",
     "read_my_document",
@@ -29,6 +31,8 @@ AUTOMATIC_READS = {
     "get_system_prompt",
 }
 AUTOMATIC_LOCAL_RECORDS = {
+    "search_jobs",
+    "import_job_posting",
     "save_opportunity",
     "set_opportunity_stage",
     "add_opportunity_note",

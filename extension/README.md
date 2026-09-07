@@ -1,9 +1,18 @@
 # Clover Browser Companion
 
 The Chromium companion lets Juno inspect the job or application page you are actively viewing,
-answer questions about it, and fill safe empty form fields. It never submits an application.
+answer questions about it, fill safe empty form fields, and attach your stored resume. It can click
+one unambiguous final submission button only after you review the live page and explicitly confirm.
 
-## Load it in Chrome, Edge, Brave, or Arc
+## Install
+
+For a normal release, install Clover Browser Companion from its Chrome Web Store page. The browser
+installs it once and delivers future updates automatically. Clover still uses a one-time local
+pairing step so a website cannot connect to the desktop app.
+
+Until the store listing is published, use the development steps below.
+
+## Load it for development in Chrome, Edge, Brave, or Arc
 
 1. Open Clover and leave it running.
 2. In the browser, open the extensions page and enable **Developer mode**.
@@ -22,17 +31,26 @@ From the repository root, run Clover's managed Python:
 uv run python scripts/package_extension.py
 ```
 
-The result is `dist/clover-browser-companion.zip`. Unzip it before using **Load unpacked**.
+The store upload is `dist/clover-browser-companion-<version>.zip`; the script also writes
+`dist/clover-browser-companion.zip` for local release tooling. A ZIP must be uploaded to the browser
+store; for **Load unpacked**, select the `extension` folder directly.
+
+Store copy, permission justifications, disclosures, and the submission checklist live in
+[`STORE_LISTING.md`](STORE_LISTING.md).
 
 ## Safety boundaries
 
 - Captured page text and form values stay in memory for the current request and are not added to
   Clover's database.
 - Saving a role requires clicking **Save opportunity**.
-- Passwords, payment details, government IDs, protected demographic fields, file inputs, consent
-  checkboxes, hidden fields, and submit controls are excluded.
+- Passwords, payment details, government IDs, protected demographic fields, consent checkboxes,
+  hidden fields, and submit controls are excluded from generated answers.
+- A resume is attached only to a clearly identified resume or CV file field.
 - Autofill changes only empty supported fields, highlights each change, and offers Undo.
-- Juno cannot click or trigger submit.
+- Multi-page forms are prepared one page at a time; you control when to continue.
+- Final submission requires a fresh one-time approval, is bound to the reviewed URL, and stops when
+  required fields are incomplete or the submit control is ambiguous. Confirm receipt on the
+  employer's success page.
 
 See [PRIVACY.md](PRIVACY.md) for the complete data-handling summary.
 

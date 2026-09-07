@@ -25,10 +25,15 @@ from job_agent.documents import refresh_pdf_extractions, save_document_base64, s
 from job_agent.extension_api import (
     MAX_EXTENSION_BODY_BYTES,
     analyze_page,
+    application_document,
+    approve_application_submission,
     authenticate as authenticate_extension,
+    cancel_application_submission,
+    complete_application_submission,
     create_pairing_code,
     list_connections,
     pair_extension,
+    request_application_submission,
     resolve_page,
     revoke_connection,
     save_page_opportunity,
@@ -73,6 +78,7 @@ CONTENT_TYPES = {
 # Tools whose use means an open screen is now out of date.
 MUTATING_TOOLS = {
     "save_opportunity",
+    "import_job_posting",
     "set_opportunity_stage",
     "add_opportunity_note",
     "save_application_material",
@@ -195,6 +201,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         if parsed.path.startswith("/api/extension/") and length > MAX_EXTENSION_BODY_BYTES:
+            # Drain only the bounded prefix the client is already sending so it can
+            # reliably receive the 413 instead of racing a closed socket.
+            remaining = min(length, MAX_EXTENSION_BODY_BYTES + 1)
+            while remaining:
+                chunk = self.rfile.read(min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
             self._json({"error": "That page is too large for Clover to inspect safely."}, 413)
             return
         raw = self.rfile.read(length) if length else b"{}"
@@ -362,6 +376,20 @@ class Handler(BaseHTTPRequestHandler):
             company=str(payload.get("company") or ""),
             description=str(payload.get("jobDescription") or ""),
             source_url=str(payload.get("sourceUrl") or ""),
+            apply_url=str(payload.get("applyUrl") or ""),
+            source_kind=str(payload.get("sourceKind") or ""),
+            external_id=str(payload.get("externalId") or ""),
+            location=payload.get("location"),
+            compensation=payload.get("compensation"),
+            employment_type=str(payload.get("employmentType") or ""),
+            workplace_type=str(payload.get("workplaceType") or ""),
+            department=str(payload.get("department") or ""),
+            seniority=str(payload.get("seniority") or ""),
+            requirements=payload.get("requirements"),
+            posted_at=str(payload.get("postedAt") or "") or None,
+            verification_status=str(payload.get("verificationStatus") or "") or None,
+            last_verified_at=str(payload.get("lastVerifiedAt") or "") or None,
+            source_metadata=payload.get("sourceMetadata"),
             stage=str(payload.get("stage") or "interested"),
         )
         self._json(result)
@@ -403,6 +431,25 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True})
 
     def post_approval(self, payload: dict[str, Any], action_id: str = "") -> None:
+        pending = next(
+            (item for item in list_pending_actions() if item["id"] == action_id),
+            None,
+        )
+        if (
+            pending
+            and pending["action_name"] == "submit_application"
+            and bool(payload.get("approved"))
+        ):
+            self._json(
+                {
+                    "error": (
+                        "Application submission must be confirmed from the browser companion "
+                        "while the reviewed page is still open."
+                    )
+                },
+                409,
+            )
+            return
         resolution = resolve_approval(action_id, bool(payload.get("approved")))
         if not resolution["approved"]:
             self._json({"ok": True, "status": "rejected"})
@@ -466,6 +513,55 @@ class Handler(BaseHTTPRequestHandler):
     def post_extension_save(self, payload: dict[str, Any]) -> None:
         identity = self._extension_identity()
         self._json(save_page_opportunity(payload.get("page"), person_id=identity["personId"]))
+
+    def get_extension_document(self, query: dict[str, Any]) -> None:
+        identity = self._extension_identity()
+        self._json(
+            application_document(
+                kind=str(query.get("kind") or "resume"),
+                person_id=identity["personId"],
+            )
+        )
+
+    def post_extension_submission_request(self, payload: dict[str, Any]) -> None:
+        identity = self._extension_identity()
+        self._json(
+            request_application_submission(
+                payload.get("page"),
+                person_id=identity["personId"],
+                connection_id=identity["id"],
+            )
+        )
+
+    def post_extension_submission_approve(self, payload: dict[str, Any]) -> None:
+        identity = self._extension_identity()
+        self._json(
+            approve_application_submission(
+                str(payload.get("actionId") or ""),
+                payload.get("page"),
+                person_id=identity["personId"],
+                connection_id=identity["id"],
+            )
+        )
+
+    def post_extension_submission_cancel(self, payload: dict[str, Any]) -> None:
+        identity = self._extension_identity()
+        self._json(
+            cancel_application_submission(
+                str(payload.get("actionId") or ""),
+                person_id=identity["personId"],
+            )
+        )
+
+    def post_extension_submission_complete(self, payload: dict[str, Any]) -> None:
+        identity = self._extension_identity()
+        self._json(
+            complete_application_submission(
+                str(payload.get("actionId") or ""),
+                succeeded=bool(payload.get("succeeded")),
+                person_id=identity["personId"],
+            )
+        )
 
     def post_extension_pairing_code(self, payload: dict[str, Any]) -> None:
         self._json(create_pairing_code())
@@ -619,6 +715,7 @@ class Handler(BaseHTTPRequestHandler):
         ("settings",): "get_settings",
         ("strategy",): "get_strategy",
         ("extension", "status"): "get_extension_status",
+        ("extension", "application-document"): "get_extension_document",
     }
 
     POST_ROUTES: dict[tuple[str, ...], str] = {
@@ -640,6 +737,10 @@ class Handler(BaseHTTPRequestHandler):
         ("extension", "chat"): "post_extension_analyze",
         ("extension", "suggest-fields"): "post_extension_suggest_fields",
         ("extension", "save-opportunity"): "post_extension_save",
+        ("extension", "submission", "request"): "post_extension_submission_request",
+        ("extension", "submission", "approve"): "post_extension_submission_approve",
+        ("extension", "submission", "cancel"): "post_extension_submission_cancel",
+        ("extension", "submission", "complete"): "post_extension_submission_complete",
         ("settings", "extension", "pairing-code"): "post_extension_pairing_code",
         ("settings", "extension", ":connection_id", "revoke"): "post_extension_revoke",
         ("engine", ":action"): "post_engine",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Iterator
 from urllib.error import HTTPError
@@ -15,6 +16,10 @@ from job_agent.storage import begin_turn
 
 # What the user sees while Juno works. Never tool names.
 TOOL_ACTIVITY: dict[str, str] = {
+    "search_web": "Searching the web",
+    "search_jobs": "Looking for roles at company sources",
+    "visit_page": "Reading the source page",
+    "import_job_posting": "Adding this posting to Opportunities",
     "get_opportunities": "Looking over your opportunities",
     "get_opportunity": "Reading this opportunity's history",
     "save_opportunity": "Saving this role",
@@ -106,7 +111,12 @@ def system_message(context: str = "") -> dict[str, str]:
     }
 
 
-def _payload(messages: list[dict[str, Any]], tool_names: tuple[str, ...] | None) -> dict[str, Any]:
+def _payload(
+    messages: list[dict[str, Any]],
+    tool_names: tuple[str, ...] | None,
+    *,
+    forced_tool: str | None = None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         # Address the exact instance Clover loaded at its bounded context size.
         # Using the catalog key lets LM Studio silently auto-load a second,
@@ -119,13 +129,37 @@ def _payload(messages: list[dict[str, Any]], tool_names: tuple[str, ...] | None)
         "stream": False,
         "store": False,
     }
-    tools = openai_tools(tool_names) if tool_names else []
+    selected_names = tool_names
+    if forced_tool and tool_names and forced_tool in tool_names:
+        selected_names = (forced_tool,)
+    tools = openai_tools(selected_names) if selected_names else []
     if tools:
         payload["tools"] = [
             {"type": "function", **tool["function"]}
             for tool in tools
         ]
+        if forced_tool:
+            payload["tool_choice"] = "required"
     return payload
+
+
+def _job_search_requested(messages: list[dict[str, Any]]) -> bool:
+    latest = next(
+        (
+            str(item.get("content") or "").lower()
+            for item in reversed(messages)
+            if item.get("role") == "user"
+        ),
+        "",
+    )
+    return bool(
+        re.search(
+            r"\b(find|search(?: for)?|look(?: for| up)|show me)\b.{0,60}"
+            r"\b(jobs?|roles?|listings?|openings?|opportunities)\b",
+            latest,
+        )
+        or re.search(r"\b(specific|current|live) listings?\b", latest)
+    )
 
 
 def _response_content(data: dict[str, Any]) -> str:
@@ -274,12 +308,21 @@ def complete(
     retried_empty = False
     tool_names = _preload_resume(messages, traces, tool_names)
     deadline = time.monotonic() + MODEL_TURN_TIMEOUT
-    for _ in range(max_tool_rounds):
+    force_job_search = bool(
+        tool_names
+        and "search_jobs" in tool_names
+        and _job_search_requested(messages)
+    )
+    for round_index in range(max_tool_rounds):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ModelResponseTimeout("Juno's turn exceeded Clover's time limit.")
         data = _post(
-            _payload(messages, tool_names),
+            _payload(
+                messages,
+                tool_names,
+                forced_tool="search_jobs" if force_job_search and round_index == 0 else None,
+            ),
             timeout=min(MODEL_REQUEST_TIMEOUT, remaining),
         )
         content = _response_content(data)
@@ -322,13 +365,22 @@ def stream(
     tool_names = _preload_resume(messages, traces, tool_names)
     deadline = time.monotonic() + MODEL_TURN_TIMEOUT
 
-    for _ in range(max_tool_rounds):
+    force_job_search = bool(
+        tool_names
+        and "search_jobs" in tool_names
+        and _job_search_requested(messages)
+    )
+    for round_index in range(max_tool_rounds):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ModelResponseTimeout("Juno's turn exceeded Clover's time limit.")
         yield {"type": "activity", "text": "Putting that together"}
         data = _post(
-            _payload(messages, tool_names),
+            _payload(
+                messages,
+                tool_names,
+                forced_tool="search_jobs" if force_job_search and round_index == 0 else None,
+            ),
             timeout=min(MODEL_REQUEST_TIMEOUT, remaining),
         )
         joined = _response_content(data)

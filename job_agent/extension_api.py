@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -11,13 +12,20 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from job_agent import opportunities
+from job_agent.autonomy import (
+    complete_approval,
+    queue_approval,
+    resolve_approval,
+)
 from job_agent.chat import complete
 from job_agent.context import build_turn_context
+from job_agent.documents import document_file
+from job_agent.job_urls import normalize_job_url, normalize_web_url
 from job_agent.storage import (
     DEFAULT_PERSON_ID,
+    connect,
     ensure_thread,
     initialize_database,
     new_id,
@@ -26,21 +34,13 @@ from job_agent.storage import (
 )
 
 PAIRING_TTL_MINUTES = 10
+SUBMISSION_APPROVAL_TTL_MINUTES = 10
 MAX_EXTENSION_BODY_BYTES = 512_000
 MAX_PAGE_TEXT_CHARS = 30_000
 MAX_FIELDS = 80
 MAX_FIELD_VALUE_CHARS = 4_000
 READ_ONLY_EXTENSION_TOOLS = ("get_opportunity", "read_my_document", "search_memory")
 
-TRACKING_PARAMETERS = {
-    "fbclid",
-    "gclid",
-    "mc_cid",
-    "mc_eid",
-    "ref",
-    "referrer",
-    "source",
-}
 SENSITIVE_FIELD_PATTERN = re.compile(
     r"\b(password|passcode|credit|debit|card number|cvv|cvc|bank|routing|"
     r"social security|ssn|national id|government id|passport|driver.?s license|"
@@ -212,22 +212,17 @@ def revoke_connection(connection_id: str, person_id: str = DEFAULT_PERSON_ID) ->
 
 
 def normalize_url(url: str) -> str:
-    clean = (url or "").strip()
-    parsed = urlsplit(clean)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username is not None
-        or parsed.password is not None
-    ):
+    try:
+        return normalize_web_url(url)
+    except ValueError:
         raise ValueError("The active page does not have a usable web address.")
-    query = [
-        (key, value)
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if not key.lower().startswith("utm_") and key.lower() not in TRACKING_PARAMETERS
-    ]
-    path = parsed.path.rstrip("/") or "/"
-    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, urlencode(query), ""))
+
+
+def _optional_url(value: Any) -> str:
+    try:
+        return normalize_url(str(value or ""))
+    except ValueError:
+        return ""
 
 
 def _safe_field(raw: Any) -> dict[str, Any] | None:
@@ -273,12 +268,67 @@ def sanitize_page(raw: Any) -> dict[str, Any]:
         field = _safe_field(item)
         if field is not None:
             fields.append(field)
+    application = raw.get("application") if isinstance(raw.get("application"), dict) else {}
+    listing = raw.get("listing") if isinstance(raw.get("listing"), dict) else {}
+    raw_location = listing.get("location") if isinstance(listing.get("location"), dict) else {}
+    raw_compensation = (
+        listing.get("compensation")
+        if isinstance(listing.get("compensation"), dict)
+        else {}
+    )
+    submit = application.get("submit") if isinstance(application.get("submit"), dict) else {}
+    file_fields = [
+        {
+            "fieldId": str(item.get("fieldId") or "")[:160],
+            "label": " ".join(str(item.get("label") or "").split())[:300],
+            "accept": str(item.get("accept") or "")[:300],
+            "hasFile": bool(item.get("hasFile")),
+            "filename": str(item.get("filename") or "")[:300],
+        }
+        for item in (application.get("fileFields") or [])[:20]
+        if isinstance(item, dict) and str(item.get("fieldId") or "").strip()
+    ]
+    unresolved = [
+        {
+            "label": " ".join(str(item.get("label") or "").split())[:300],
+            "type": str(item.get("type") or "")[:40],
+            "sensitive": bool(item.get("sensitive")),
+        }
+        for item in (application.get("unresolvedRequired") or [])[:30]
+        if isinstance(item, dict)
+    ]
     return {
         "url": normalize_url(str(raw.get("url") or "")),
         "title": " ".join(str(raw.get("title") or "").split())[:500],
         "company": " ".join(str(raw.get("company") or "").split())[:300],
         "postingText": str(raw.get("postingText") or "")[:MAX_PAGE_TEXT_CHARS],
         "fields": fields,
+        "application": {
+            "fileFields": file_fields,
+            "unresolvedRequired": unresolved,
+            "submit": {
+                "available": bool(submit.get("available")),
+                "ambiguous": bool(submit.get("ambiguous")),
+                "label": " ".join(str(submit.get("label") or "").split())[:200],
+            },
+        },
+        "listing": {
+            "companyWebsite": _optional_url(listing.get("companyWebsite")),
+            "location": {
+                "text": str(raw_location.get("text") or "")[:500],
+                "remote": bool(raw_location.get("remote")),
+                "arrangement": str(raw_location.get("arrangement") or "")[:80],
+            },
+            "compensation": {
+                key: raw_compensation.get(key)
+                for key in ("min", "max", "currency", "period", "text")
+                if raw_compensation.get(key) not in (None, "")
+            },
+            "employmentType": str(listing.get("employmentType") or "")[:120],
+            "workplaceType": str(listing.get("workplaceType") or "")[:80],
+            "postedAt": str(listing.get("postedAt") or "")[:80],
+            "externalId": str(listing.get("externalId") or "")[:200],
+        },
         "capturedAt": str(raw.get("capturedAt") or "")[:80],
     }
 
@@ -287,12 +337,13 @@ def resolve_page(raw_page: Any, person_id: str = DEFAULT_PERSON_ID) -> dict[str,
     page = sanitize_page(raw_page)
     match = opportunities.find_process_by_source_url(page["url"], person_id=person_id)
     if match is None:
+        page_posting_url = normalize_job_url(page["url"])
         for item in opportunities.list_opportunities(person_id)["opportunities"]:
             try:
-                candidate = normalize_url(str(item.get("sourceUrl") or ""))
+                candidate = normalize_job_url(str(item.get("sourceUrl") or ""))
             except ValueError:
                 continue
-            if candidate == page["url"]:
+            if candidate == page_posting_url:
                 match = item
                 break
     return {"page": page, "matched": match is not None, "opportunity": match}
@@ -472,6 +523,167 @@ def suggest_fields(
     return {"suggestions": suggestions, "matchedOpportunityId": opportunity_id}
 
 
+def application_document(
+    *,
+    kind: str = "resume",
+    person_id: str = DEFAULT_PERSON_ID,
+) -> dict[str, Any]:
+    stored = document_file(kind=kind, person_id=person_id)
+    if stored is None:
+        raise ValueError(
+            f"No uploadable {kind} is stored in Clover. Add the original file in your profile first."
+        )
+    return {
+        "filename": stored["filename"],
+        "mimeType": stored["mimeType"],
+        "content": base64.b64encode(stored["data"]).decode("ascii"),
+    }
+
+
+def _submission_action(action_id: str, person_id: str) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT id, action_name, arguments_json, status, requested_at
+            FROM pending_action
+            WHERE id = ? AND person_id = ?
+            """,
+            (action_id, person_id),
+        ).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    try:
+        arguments = json.loads(str(result.pop("arguments_json") or "{}"))
+    except json.JSONDecodeError:
+        arguments = {}
+    result["arguments"] = arguments if isinstance(arguments, dict) else {}
+    return result
+
+
+def request_application_submission(
+    raw_page: Any,
+    *,
+    person_id: str = DEFAULT_PERSON_ID,
+    connection_id: str = "",
+) -> dict[str, Any]:
+    page = sanitize_page(raw_page)
+    application = page["application"]
+    unresolved = application["unresolvedRequired"]
+    submit = application["submit"]
+    if unresolved:
+        labels = ", ".join(item["label"] or "required field" for item in unresolved[:4])
+        raise ValueError(f"Complete the required fields before review: {labels}.")
+    if not submit["available"] or submit["ambiguous"]:
+        raise ValueError(
+            "Clover could not identify one unambiguous final submission button on this page."
+        )
+    with transaction() as connection:
+        connection.execute(
+            """
+            UPDATE pending_action
+            SET status = 'rejected', resolved_at = ?, updated_at = ?
+            WHERE person_id = ? AND action_name = 'submit_application'
+              AND status = 'pending'
+            """,
+            (utc_now(), utc_now(), person_id),
+        )
+    action_id = queue_approval(
+        action_name="submit_application",
+        arguments={
+            "url": page["url"],
+            "title": page["title"],
+            "company": page["company"],
+            "buttonLabel": submit["label"],
+            "connectionId": connection_id,
+        },
+        explanation=(
+            f"Submit this application to {page['company'] or page['title'] or 'the employer'} "
+            f"using the final “{submit['label'] or 'Submit'}” button."
+        ),
+        person_id=person_id,
+    )
+    return {
+        "actionId": action_id,
+        "explanation": (
+            "This sends the application to the employer. Review the page, then confirm once."
+        ),
+        "buttonLabel": submit["label"],
+        "expiresInMinutes": SUBMISSION_APPROVAL_TTL_MINUTES,
+    }
+
+
+def approve_application_submission(
+    action_id: str,
+    raw_page: Any,
+    *,
+    person_id: str = DEFAULT_PERSON_ID,
+    connection_id: str = "",
+) -> dict[str, Any]:
+    action = _submission_action(action_id, person_id)
+    if action is None or action["action_name"] != "submit_application":
+        raise ValueError("That submission approval no longer exists.")
+    if action["status"] != "pending":
+        raise ValueError("That submission approval has already been used.")
+    if str(action["arguments"].get("connectionId") or "") != connection_id:
+        raise ValueError("That approval belongs to a different browser connection.")
+    requested = datetime.fromisoformat(str(action["requested_at"]))
+    if requested.tzinfo is None:
+        requested = requested.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - requested > timedelta(
+        minutes=SUBMISSION_APPROVAL_TTL_MINUTES
+    ):
+        resolve_approval(action_id, False, person_id=person_id)
+        raise ValueError("That submission approval expired. Review the page again.")
+    page = sanitize_page(raw_page)
+    expected_url = str(action["arguments"].get("url") or "")
+    if page["url"] != expected_url:
+        resolve_approval(action_id, False, person_id=person_id)
+        raise ValueError("The page changed. Review the current application before submitting.")
+    if page["application"]["unresolvedRequired"]:
+        raise ValueError("A required field became incomplete. Review the page again.")
+    resolution = resolve_approval(action_id, True, person_id=person_id)
+    return {
+        "actionId": action_id,
+        "expectedUrl": expected_url,
+        "approved": resolution["approved"],
+    }
+
+
+def cancel_application_submission(
+    action_id: str,
+    *,
+    person_id: str = DEFAULT_PERSON_ID,
+) -> dict[str, Any]:
+    action = _submission_action(action_id, person_id)
+    if action is None or action["action_name"] != "submit_application":
+        raise ValueError("That submission approval no longer exists.")
+    if action["status"] != "pending":
+        raise ValueError("That submission approval has already been used.")
+    resolve_approval(action_id, False, person_id=person_id)
+    return {"actionId": action_id, "status": "rejected"}
+
+
+def complete_application_submission(
+    action_id: str,
+    *,
+    succeeded: bool,
+    person_id: str = DEFAULT_PERSON_ID,
+) -> dict[str, Any]:
+    action = _submission_action(action_id, person_id)
+    if (
+        action is None
+        or action["action_name"] != "submit_application"
+        or action["status"] != "approved"
+    ):
+        raise ValueError("That submission approval cannot be completed.")
+    complete_approval(action_id, succeeded=succeeded, person_id=person_id)
+    return {
+        "actionId": action_id,
+        "status": "completed" if succeeded else "failed",
+    }
+
+
 def save_page_opportunity(
     raw_page: Any,
     *,
@@ -481,11 +693,27 @@ def save_page_opportunity(
     existing = resolve_page(page, person_id)["opportunity"]
     if existing is not None:
         return {**existing, "created": False}
+    listing = page["listing"]
     return opportunities.save_opportunity(
         title=page["title"] or "Untitled opportunity",
         company=page["company"],
         description=page["postingText"],
         source_url=page["url"],
+        apply_url=page["url"],
+        source_kind="browser_page",
+        external_id=listing["externalId"],
+        location=listing["location"],
+        compensation=listing["compensation"],
+        employment_type=listing["employmentType"],
+        workplace_type=listing["workplaceType"],
+        posted_at=listing["postedAt"] or None,
+        verification_status="partial",
+        last_verified_at=utc_now(),
+        source_metadata={
+            "capturedAt": page["capturedAt"],
+            "externalId": listing["externalId"],
+        },
+        company_website=listing["companyWebsite"],
         stage="interested",
         person_id=person_id,
     )

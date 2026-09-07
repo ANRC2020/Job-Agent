@@ -3,17 +3,24 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from base64 import b64decode
 from unittest.mock import patch
 
 from job_agent import opportunities
+from job_agent.documents import save_document
 from job_agent.extension_api import (
     READ_ONLY_EXTENSION_TOOLS,
     _rate_events,
     analyze_page,
+    application_document,
+    approve_application_submission,
     authenticate,
+    cancel_application_submission,
     check_rate_limit,
+    complete_application_submission,
     create_pairing_code,
     pair_extension,
+    request_application_submission,
     resolve_page,
     revoke_connection,
     sanitize_page,
@@ -55,6 +62,36 @@ class BrowserExtensionApiTests(unittest.TestCase):
                     "currentValue": "",
                 },
             ],
+            "application": {
+                "fileFields": [
+                    {
+                        "fieldId": "resume",
+                        "label": "Resume",
+                        "accept": ".pdf",
+                        "hasFile": True,
+                    }
+                ],
+                "unresolvedRequired": [],
+                "submit": {
+                    "available": True,
+                    "ambiguous": False,
+                    "label": "Submit application",
+                },
+            },
+            "listing": {
+                "companyWebsite": "https://example.test/?utm_source=job",
+                "location": {"text": "Remote - US", "remote": True, "arrangement": "remote"},
+                "compensation": {
+                    "min": 180000,
+                    "max": 220000,
+                    "currency": "USD",
+                    "period": "year",
+                },
+                "employmentType": "FullTime",
+                "workplaceType": "Remote",
+                "postedAt": "2026-09-01",
+                "externalId": "job-42",
+            },
         }
 
     def test_pairing_stores_only_hashes_and_can_be_revoked(self) -> None:
@@ -88,6 +125,8 @@ class BrowserExtensionApiTests(unittest.TestCase):
         page = sanitize_page(self.page())
         self.assertEqual("https://jobs.example.test/role?gh_jid=42", page["url"])
         self.assertEqual(["safe"], [field["fieldId"] for field in page["fields"]])
+        self.assertEqual("Remote - US", page["listing"]["location"]["text"])
+        self.assertEqual("https://example.test/", page["listing"]["companyWebsite"])
 
     def test_saved_url_matches_without_creating_a_duplicate(self) -> None:
         saved = opportunities.save_opportunity(
@@ -100,6 +139,20 @@ class BrowserExtensionApiTests(unittest.TestCase):
         self.assertTrue(resolved["matched"])
         self.assertEqual(saved["id"], resolved["opportunity"]["id"])
         self.assertEqual(1, opportunities.list_opportunities()["total"])
+
+    def test_application_path_matches_its_canonical_saved_posting(self) -> None:
+        saved = opportunities.save_opportunity(
+            title="Product Writer",
+            company="Example",
+            source_url="https://jobs.example.test/role?gh_jid=42",
+        )
+        page = self.page()
+        page["url"] = "https://jobs.example.test/role/apply?gh_jid=42&utm_source=email"
+
+        resolved = resolve_page(page)
+
+        self.assertTrue(resolved["matched"])
+        self.assertEqual(saved["id"], resolved["opportunity"]["id"])
 
     def test_page_analysis_is_ephemeral_and_tools_are_read_only(self) -> None:
         with patch(
@@ -138,6 +191,58 @@ class BrowserExtensionApiTests(unittest.TestCase):
         check_rate_limit("test", limit=2)
         with self.assertRaisesRegex(ValueError, "Too many"):
             check_rate_limit("test", limit=2)
+
+    def test_resume_file_can_be_sent_to_the_paired_browser(self) -> None:
+        save_document(filename="resume.pdf", data=b"%PDF-test resume")
+
+        result = application_document()
+
+        self.assertEqual("resume.pdf", result["filename"])
+        self.assertEqual(b"%PDF-test resume", b64decode(result["content"]))
+
+    def test_submission_approval_is_page_bound_and_one_time(self) -> None:
+        requested = request_application_submission(self.page())
+        approved = approve_application_submission(requested["actionId"], self.page())
+
+        self.assertTrue(approved["approved"])
+        with self.assertRaisesRegex(ValueError, "already been used"):
+            approve_application_submission(requested["actionId"], self.page())
+        completed = complete_application_submission(requested["actionId"], succeeded=True)
+        self.assertEqual("completed", completed["status"])
+
+    def test_submission_review_rejects_incomplete_or_changed_pages(self) -> None:
+        incomplete = self.page()
+        incomplete["application"]["unresolvedRequired"] = [
+            {"label": "Legal name", "type": "text", "sensitive": False}
+        ]
+        with self.assertRaisesRegex(ValueError, "Legal name"):
+            request_application_submission(incomplete)
+
+        requested = request_application_submission(self.page())
+        changed = self.page()
+        changed["url"] = "https://jobs.example.test/another-role"
+        with self.assertRaisesRegex(ValueError, "page changed"):
+            approve_application_submission(requested["actionId"], changed)
+
+    def test_submission_can_be_canceled_before_approval(self) -> None:
+        requested = request_application_submission(self.page())
+        result = cancel_application_submission(requested["actionId"])
+        self.assertEqual("rejected", result["status"])
+
+    def test_submission_approval_is_bound_to_browser_connection(self) -> None:
+        requested = request_application_submission(self.page(), connection_id="browser-a")
+        with self.assertRaisesRegex(ValueError, "different browser connection"):
+            approve_application_submission(
+                requested["actionId"],
+                self.page(),
+                connection_id="browser-b",
+            )
+        approved = approve_application_submission(
+            requested["actionId"],
+            self.page(),
+            connection_id="browser-a",
+        )
+        self.assertTrue(approved["approved"])
 
 
 if __name__ == "__main__":

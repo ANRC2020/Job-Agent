@@ -11,6 +11,11 @@ export function metaRow(item) {
   if (item.location) bits.push(el("span", {}, icon("pin", "icon-sm"), item.location));
   if (item.compensation) bits.push(el("span", {}, icon("coin", "icon-sm"), item.compensation));
   if (item.employmentType) bits.push(el("span", {}, item.employmentType));
+  if (item.workplaceType && !String(item.location || "").toLowerCase().includes(String(item.workplaceType).toLowerCase())) {
+    bits.push(el("span", { text: item.workplaceType }));
+  }
+  if (item.department) bits.push(el("span", { text: item.department }));
+  if (item.seniority) bits.push(el("span", { text: item.seniority }));
   if (!bits.length) return null;
   return el("div", { class: "meta-row" }, bits);
 }
@@ -47,6 +52,14 @@ export function opportunityCard(item, { onOpen }) {
   const body = el("div", { class: "stack stack-2", style: "margin-top: 12px" });
   const meta = metaRow(item);
   if (meta) body.append(meta);
+  if (item.verificationStatus === "verified") {
+    body.append(
+      el("div", {
+        class: "small faint",
+        text: `Verified at the source${item.lastVerifiedAt ? ` · ${when(item.lastVerifiedAt)}` : ""}`,
+      })
+    );
+  }
   if (item.fitSummary) body.append(el("div", { class: "opp-take", text: item.fitSummary }));
   if (item.keyReason) body.append(reasonLine("fit", item.keyReason));
   if (item.mainConcern) body.append(reasonLine("concern", item.mainConcern));
