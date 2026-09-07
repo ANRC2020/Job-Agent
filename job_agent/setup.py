@@ -3,6 +3,7 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 
 from job_agent.config import load_config
@@ -12,11 +13,13 @@ from job_agent.lmstudio import (
     ensure_prompt_and_mcp,
     lms,
     lms_bin,
+    lms_live,
 )
 from job_agent.storage import initialize_database
 
 
 Log = Callable[[str], None]
+MODEL_DOWNLOAD_ATTEMPTS = 4
 
 
 def _install_cli(log: Log) -> None:
@@ -97,10 +100,28 @@ def run_setup(log: Log = print) -> None:
         log(f"{cfg.model} already downloaded — skipping model install")
     else:
         log(f"Downloading {cfg.model} (hardware-recommended quantization)")
-        got = lms("get", cfg.model, "--yes")
-        if got.returncode != 0:
-            raise RuntimeError(got.stderr or got.stdout or "Model download failed")
-        log((got.stdout or got.stderr).strip())
+        got = None
+        for attempt in range(1, MODEL_DOWNLOAD_ATTEMPTS + 1):
+            if attempt > 1:
+                log(
+                    f"Resuming model download (attempt {attempt}/{MODEL_DOWNLOAD_ATTEMPTS})"
+                )
+            runner = lms_live if log is print else lms
+            got = runner("get", cfg.model, "--yes")
+            if got.returncode == 0:
+                break
+            if attempt < MODEL_DOWNLOAD_ATTEMPTS:
+                log("The download was interrupted. Clover will resume it automatically.")
+                time.sleep(min(30, attempt * 5))
+        if got is None or got.returncode != 0:
+            raise RuntimeError(
+                (got.stderr if got else "")
+                or (got.stdout if got else "")
+                or "Model download failed after four resumable attempts"
+            )
+        output = (got.stdout or got.stderr or "").strip()
+        if output:
+            log(output)
     ensure_prompt_and_mcp()
     log("Wrote system prompt and MCP config")
     install_desktop(log)

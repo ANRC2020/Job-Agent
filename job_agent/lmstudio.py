@@ -39,14 +39,19 @@ def desktop_installed() -> bool:
     return False
 
 
-def _run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+def _run(
+    args: list[str],
+    *,
+    capture_output: bool = True,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     lm_bin = str(lmstudio_home() / "bin")
     env["PATH"] = lm_bin + os.pathsep + env.get("PATH", "")
     return subprocess.run(
         args,
         text=True,
-        capture_output=True,
+        capture_output=capture_output,
         env=env,
         **kwargs,
     )
@@ -57,6 +62,14 @@ def lms(*args: str) -> subprocess.CompletedProcess[str]:
     if binary is None:
         raise FileNotFoundError("lms is not installed")
     return _run([str(binary), *args])
+
+
+def lms_live(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run lms with visible progress for terminal-based installation."""
+    binary = lms_bin()
+    if binary is None:
+        raise FileNotFoundError("lms is not installed")
+    return _run([str(binary), *args], capture_output=False)
 
 
 def downloaded_models() -> list[str]:
