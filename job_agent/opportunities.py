@@ -20,6 +20,7 @@ from job_agent.storage import (
     initialize_database,
     json_value,
     list_messages,
+    list_tool_actions,
     new_id,
     progress_recorded_this_turn,
     transaction,
@@ -366,6 +367,7 @@ def get_opportunity(process_id: str, person_id: str = DEFAULT_PERSON_ID) -> dict
     )
     summary["threadId"] = thread_id(process_id, person_id=person_id)
     summary["messages"] = list_messages(summary["threadId"])
+    summary["actions"] = list_tool_actions(summary["threadId"])
     return summary
 
 
@@ -630,7 +632,6 @@ def set_stage(
                 current_stage = ?,
                 status = ?,
                 outcome = COALESCE(?, outcome),
-                next_action = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -638,7 +639,6 @@ def set_stage(
                 target,
                 "closed" if target == "closed" else "active",
                 (outcome or "").strip() or None,
-                None,
                 now,
                 process_id,
             ),

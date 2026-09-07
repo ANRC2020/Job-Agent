@@ -32,6 +32,8 @@ DOMAIN_TABLES = {
         "job_contact",
         "job_interaction",
         "application_material",
+        "job_process",
+        "learning",
         "job_artifact",
     ],
     "learnings": [
@@ -118,6 +120,42 @@ JSON_COLUMNS = {
 }
 
 PROTECTED_UPDATE_COLUMNS = {"id", "created_at"}
+APP_MANAGED_CREATE_TABLES = frozenset(
+    {
+        "message",
+        "job_stage_event",
+        "learning_evidence",
+        "progress_event",
+        "model_run",
+        "application_material",
+        "job_process",
+        "learning",
+    }
+)
+IMMUTABLE_UPDATE_TABLES = frozenset(
+    {
+        "message",
+        "job_stage_event",
+        "learning_evidence",
+        "progress_event",
+        "model_run",
+        "application_material",
+    }
+)
+PRODUCT_MANAGED_UPDATE_FIELDS = {
+    "job_process": {"current_stage", "status", "outcome"},
+    "learning": {
+        "review_state",
+        "status",
+        "lifecycle_state",
+        "support_count",
+        "contradiction_count",
+        "last_evidence_at",
+        "last_decayed_at",
+        "reviewed_at",
+        "review_note",
+    },
+}
 
 SEARCH_TARGETS = {
     "person": ("person_memory_fts", ["entity_type", "entity_id", "content"]),
@@ -306,9 +344,25 @@ def create_database_record(arguments: dict[str, Any]) -> str:
     """
     initialize_database()
     table = _table_name(arguments)
+    if table in APP_MANAGED_CREATE_TABLES:
+        raise ValueError(
+            f"{table} is app-managed. Use Clover's dedicated product tool so history and provenance stay intact."
+        )
     values = arguments.get("values") or {}
     if not isinstance(values, dict):
         raise ValueError("values must be an object")
+    if table == "learning":
+        forbidden = {
+            key
+            for key in ("review_state", "status", "lifecycle_state")
+            if key in values
+            and values[key] not in {"unreviewed", "active", "hypothesis"}
+        }
+        if forbidden:
+            raise ValueError(
+                "New learnings must begin as active, unreviewed hypotheses. "
+                "Use the review operation after the user responds."
+            )
     with transaction() as connection:
         columns = _columns(connection, table)
         normalized = _normalize_values(table, values, columns, creating=True)
@@ -335,12 +389,21 @@ def update_database_record(arguments: dict[str, Any]) -> str:
     """
     initialize_database()
     table = _table_name(arguments)
+    if table in IMMUTABLE_UPDATE_TABLES:
+        raise ValueError(
+            f"{table} is append-only or versioned and cannot be changed through generic database tools."
+        )
     record_id = str(arguments.get("id") or "")
     changes = arguments.get("changes") or {}
     if not record_id:
         raise ValueError("id is required")
     if not isinstance(changes, dict) or not changes:
         raise ValueError("changes must be a non-empty object")
+    protected = PRODUCT_MANAGED_UPDATE_FIELDS.get(table, set()).intersection(changes)
+    if protected:
+        raise ValueError(
+            f"{table} fields require a dedicated product operation: {', '.join(sorted(protected))}"
+        )
     with transaction() as connection:
         columns = _columns(connection, table)
         normalized = _normalize_values(table, changes, columns, creating=False)
@@ -376,21 +439,47 @@ def search_database(arguments: dict[str, Any]) -> str:
     if unknown:
         raise ValueError(f"Unknown search scopes: {', '.join(sorted(unknown))}")
     limit = max(1, min(int(arguments.get("limit") or 10), 50))
+    process_id = str(arguments.get("opportunityId") or "").strip() or None
     results: dict[str, list[dict[str, Any]]] = {}
     with connect() as connection:
         for scope in requested:
             fts_table, columns = SEARCH_TARGETS[scope]
-            selected = ", ".join(f'"{column}"' for column in columns)
+            selected = ", ".join(f'f."{column}"' for column in columns)
+            join = ""
+            scope_clause = ""
+            params: list[Any] = [query]
+            if process_id and scope == "conversations":
+                join = "JOIN message m ON m.id = f.message_id JOIN conversation c ON c.id = m.conversation_id"
+                scope_clause = "AND c.job_process_id = ?"
+                params.append(process_id)
+            elif process_id and scope == "jobs":
+                join = "JOIN job_process p ON p.job_id = f.job_id"
+                scope_clause = "AND p.id = ?"
+                params.append(process_id)
+            elif process_id and scope == "interactions":
+                join = "JOIN job_interaction i ON i.id = f.interaction_id"
+                scope_clause = "AND i.process_id = ?"
+                params.append(process_id)
+            elif process_id and scope == "learnings":
+                join = "JOIN learning l ON l.id = f.learning_id"
+                scope_clause = "AND (l.scope IN ('person', 'market') OR l.process_id = ?)"
+                params.append(process_id)
+            params.append(limit)
             rows = connection.execute(
                 f"""
-                SELECT {selected}, rank
-                FROM "{fts_table}"
+                SELECT {selected}, f.rank
+                FROM "{fts_table}" AS f
+                {join}
                 WHERE "{fts_table}" MATCH ?
-                ORDER BY rank
+                {scope_clause}
+                ORDER BY f.rank
                 LIMIT ?
                 """,
-                (query, limit),
+                params,
             ).fetchall()
             results[scope] = [dict(row) for row in rows]
-    return json.dumps({"query": query, "results": results}, ensure_ascii=False)
+    return json.dumps(
+        {"query": query, "opportunityId": process_id, "results": results},
+        ensure_ascii=False,
+    )
 

@@ -85,6 +85,13 @@ class OnboardingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             onboarding.answer("favourite_colour", "green")
 
+    def test_steps_cannot_be_submitted_out_of_order(self) -> None:
+        with self.assertRaises(ValueError):
+            onboarding.answer("direction", "Skip ahead")
+
+        state = onboarding.onboarding_state()
+        self.assertEqual("name", state["step"]["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

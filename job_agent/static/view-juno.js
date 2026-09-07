@@ -12,7 +12,10 @@ const OPENERS = [
 ];
 
 export async function renderJuno(root, nav, { prompt } = {}) {
-  const { threadId, messages } = await api.get("/api/thread");
+  const [{ threadId, messages, actions = [] }, board] = await Promise.all([
+    api.get("/api/thread"),
+    api.get("/api/opportunities"),
+  ]);
   void threadId;
 
   const page = el("div", { class: "page" });
@@ -21,6 +24,7 @@ export async function renderJuno(root, nav, { prompt } = {}) {
 
   const chat = createChat({
     messages,
+    actions,
     suggestions: messages.length ? [] : OPENERS,
     placeholder: "Tell Juno what's on your mind…",
     intro: junoNote([
@@ -30,6 +34,26 @@ export async function renderJuno(root, nav, { prompt } = {}) {
     onChanged: () => nav.refreshCounts(),
   });
 
+  if (board.opportunities?.length) {
+    const selector = el(
+      "select",
+      {
+        class: "btn btn-quiet",
+        "aria-label": "Open an opportunity conversation",
+        onChange: (event) => {
+          if (event.target.value) nav.openOpportunity(event.target.value);
+        },
+      },
+      el("option", { value: "", text: "Talk generally" }),
+      board.opportunities.map((item) =>
+        el("option", {
+          value: item.id,
+          text: `${item.title}${item.company ? ` · ${item.company}` : ""}`,
+        })
+      )
+    );
+    inner.append(el("div", { class: "row", style: "justify-content: flex-end; margin-bottom: 12px" }, selector));
+  }
   inner.append(chat.thread);
   clear(root).append(page, chat.composer);
   chat.scrollDown(true);

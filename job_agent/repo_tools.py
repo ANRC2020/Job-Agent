@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -223,6 +224,10 @@ REPO_AND_DB_TOOLS: dict[str, dict[str, Any]] = {
                     "maximum": 50,
                     "description": "Maximum results per scope; defaults to 10.",
                 },
+                "opportunityId": {
+                    "type": "string",
+                    "description": "Hard-scope job, conversation, interaction, and opportunity learning results.",
+                },
             },
             "required": ["query"],
         },
@@ -269,10 +274,32 @@ def openai_tools(names: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
     ]
 
 
-def call_tool(name: str, arguments: dict[str, Any] | None) -> str:
+def call_tool(
+    name: str,
+    arguments: dict[str, Any] | None,
+    *,
+    approval_granted: bool = False,
+) -> str:
     spec = TOOLS.get("search_database" if name == SEARCH_MEMORY_ALIAS else name)
     if spec is None:
         return f"Unknown tool: {name}"
+    from job_agent.autonomy import action_class, can_run_automatically, queue_approval
+
+    if not approval_granted and not can_run_automatically(name):
+        action_id = queue_approval(
+            action_name=name,
+            arguments=arguments or {},
+            explanation=f"Juno needs your approval before she can {name.replace('_', ' ')}.",
+        )
+        return json.dumps(
+            {
+                "ok": False,
+                "approvalRequired": True,
+                "actionId": action_id,
+                "actionClass": action_class(name),
+            },
+            ensure_ascii=False,
+        )
     handler: Callable[[dict[str, Any]], str] = spec["handler"]
     try:
         return handler(arguments or {})

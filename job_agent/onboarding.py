@@ -172,6 +172,11 @@ def answer(
     index = next((position for position, step in enumerate(STEPS) if step["id"] == step_id), None)
     if index is None:
         raise ValueError("Juno isn't asking about that right now.")
+    with connect() as connection:
+        current = _state(connection, person_id)
+    expected = int(current.get("index") or 0)
+    if index != expected:
+        raise ValueError("Juno isn't asking about that right now.")
     step = STEPS[index]
     clean = (value or "").strip()
     if not clean and not skipped and not step.get("optional"):

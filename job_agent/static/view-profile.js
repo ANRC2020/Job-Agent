@@ -118,15 +118,25 @@ export async function renderProfile(root, nav) {
   // Juno's unconfirmed reads on the user
   const hunches = data.observations.filter((item) => !item.confirmed);
   const confirmed = data.observations.filter((item) => item.confirmed);
+  const review = async (item, verdict, claim = "", note = "") => {
+    await api.post(`/api/profile/observations/${item.id}/review`, { verdict, claim, note });
+    reload();
+  };
 
   if (hunches.length) {
     const list = el("div", { class: "stack stack-3" });
     for (const item of hunches) {
+      const evidence = el("div", { class: "small muted" });
       list.append(
         el(
           "div",
           { class: "hunch stack stack-3" },
           el("div", { class: "row", style: "align-items: flex-start; gap: 12px" }, junoMark(), el("div", { class: "prose" }, prose(item.claim))),
+          el("div", {
+            class: "small faint",
+            text: `${item.scope === "opportunity" ? "This opportunity" : item.scope === "market" ? "Market observation" : "About you"} · ${Math.round(Number(item.confidence || 0) * 100)}% confidence · ${item.evidenceCount} evidence ${item.evidenceCount === 1 ? "record" : "records"}`,
+          }),
+          evidence,
           el(
             "div",
             { class: "actions" },
@@ -134,18 +144,38 @@ export async function renderProfile(root, nav) {
               class: "btn",
               type: "button",
               text: "That's right",
+              onClick: () => review(item, "confirmed"),
+            }),
+            el("button", {
+              class: "btn btn-quiet",
+              type: "button",
+              text: "Edit",
               onClick: async () => {
-                await api.post(`/api/profile/observations/${item.id}/review`, { verdict: "confirmed" });
-                reload();
+                const claim = window.prompt("How should Juno understand this instead?", item.claim);
+                if (claim && claim.trim() && claim.trim() !== item.claim) review(item, "edited", claim.trim());
               },
             }),
             el("button", {
               class: "btn btn-quiet",
               type: "button",
-              text: "Not quite",
+              text: "Dispute",
+              onClick: () => review(item, "disputed"),
+            }),
+            el("button", {
+              class: "btn btn-quiet",
+              type: "button",
+              text: "Reject",
+              onClick: () => review(item, "rejected"),
+            }),
+            el("button", {
+              class: "btn btn-quiet",
+              type: "button",
+              text: "Why?",
               onClick: async () => {
-                await api.post(`/api/profile/observations/${item.id}/review`, { verdict: "rejected" });
-                reload();
+                const detail = await api.get(`/api/learnings/${item.id}`);
+                evidence.textContent = detail.evidence?.length
+                  ? detail.evidence.map((entry) => `${entry.polarity}: ${entry.excerpt || `${entry.entity_type} ${entry.entity_id}`}`).join(" · ")
+                  : "Juno has not attached concrete evidence yet, so this should remain a weak hunch.";
               },
             })
           )
@@ -180,7 +210,14 @@ export async function renderProfile(root, nav) {
               "div",
               { class: "understanding-item" },
               icon("check", "icon-sm"),
-              el("div", { text: item.claim })
+              el("div", { text: item.claim }),
+              el("div", { class: "spacer" }),
+              el("button", {
+                class: "btn btn-quiet",
+                type: "button",
+                text: "Retire",
+                onClick: () => review(item, "retired"),
+              })
             )
           )
         )

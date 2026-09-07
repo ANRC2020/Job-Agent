@@ -6,6 +6,7 @@ import { append, autoGrow, clear, dots, el, junoMark, prose, sendToJuno } from "
 export function createChat({
   opportunityId = null,
   messages = [],
+  actions = [],
   suggestions = [],
   placeholder = "Talk to Juno…",
   intro = null,
@@ -41,12 +42,51 @@ export function createChat({
     return bubble;
   }
 
+  function actionPanel(items) {
+    const visible = (items || []).filter((item) => item.activity || item.tool);
+    if (!visible.length) return null;
+    const statusLabel = (status) => ({
+      pending: "Waiting for approval",
+      approved: "Approved",
+      rejected: "Rejected",
+      failed: "Couldn’t finish",
+      completed: "Completed",
+    }[status] || "Completed");
+    const pending = visible.filter((item) => item.status === "pending").length;
+    return el(
+      "details",
+      { class: "action-details" },
+      el("summary", {
+        class: "small muted",
+        text: pending
+          ? `${pending} action${pending === 1 ? "" : "s"} waiting for approval`
+          : visible.length === 1 ? "1 action taken" : `${visible.length} actions taken`,
+      }),
+      el(
+        "div",
+        { class: "stack", style: "margin-top: 8px; gap: 6px" },
+        visible.map((item) =>
+          el("div", {
+            class: "small muted",
+            text: `${statusLabel(item.status)}: ${item.activity || item.tool}`,
+          })
+        )
+      )
+    );
+  }
+
   function renderHistory() {
     clear(thread);
     if (intro && !messages.length) thread.append(intro);
     for (const message of messages) {
       if (message.role === "user") addUserTurn(message.content);
-      else append(addJunoTurn(), [el("div", { class: "prose" }, prose(message.content))]);
+      else {
+        const bubble = addJunoTurn();
+        append(bubble, [
+          el("div", { class: "prose" }, prose(message.content)),
+          actionPanel(actions.filter((item) => item.model_run_id === message.model_run_id)),
+        ]);
+      }
     }
   }
 
@@ -126,6 +166,8 @@ export function createChat({
           const finalText = String(result.content || "").trim();
           if (finalText) {
             messages.push({ role: "assistant", content: finalText });
+            const panel = actionPanel(result.actions);
+            if (panel) bubble.append(panel);
           } else if (!failed) {
             bubble.append(
               el("div", { class: "prose muted" }, prose("Juno went quiet there. Try asking again."))

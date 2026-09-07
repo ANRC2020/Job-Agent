@@ -11,12 +11,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from job_agent import opportunities as opp
+from job_agent import events, opportunities as opp
 from job_agent.documents import document_text
+from job_agent.learning import DOMAINS as LEARNING_DOMAINS_SET
+from job_agent.learning import record_hypothesis
 from job_agent.person import remember_fact
 from job_agent.storage import (
     DEFAULT_PERSON_ID,
-    add_progress_event,
     initialize_database,
     new_id,
     progress_recorded_this_turn,
@@ -24,7 +25,7 @@ from job_agent.storage import (
     utc_now,
 )
 
-LEARNING_DOMAINS = ("communication", "job_preference", "application", "consistency", "other")
+LEARNING_DOMAINS = tuple(sorted(LEARNING_DOMAINS_SET))
 
 
 def _ok(message: str, **extra: Any) -> str:
@@ -137,7 +138,7 @@ def tool_set_opportunity_stage(arguments: dict[str, Any]) -> str:
     process_id = str(arguments.get("opportunityId") or "").strip()
     if not process_id:
         raise ValueError("opportunityId is required")
-    result = opp.set_stage(
+    result = events.transition_stage(
         process_id,
         str(arguments.get("stage") or ""),
         reason=str(arguments.get("reason") or ""),
@@ -157,7 +158,7 @@ def tool_add_opportunity_note(arguments: dict[str, Any]) -> str:
     if not process_id:
         raise ValueError("opportunityId is required")
     kind = str(arguments.get("kind") or "note").strip().lower()
-    opp.add_note(process_id, str(arguments.get("text") or ""), kind=kind)
+    events.record_interaction(process_id, str(arguments.get("text") or ""), kind=kind)
     return _ok("Saved to this opportunity's history.", opportunityId=process_id)
 
 
@@ -166,7 +167,7 @@ def tool_save_application_material(arguments: dict[str, Any]) -> str:
     process_id = str(arguments.get("opportunityId") or "").strip()
     if not process_id:
         raise ValueError("opportunityId is required")
-    result = opp.save_material(
+    result = events.record_material(
         process_id,
         kind=str(arguments.get("kind") or "cover_letter").strip().lower(),
         content=str(arguments.get("content") or ""),
@@ -217,20 +218,34 @@ def tool_note_observation(arguments: dict[str, Any]) -> str:
     except (TypeError, ValueError):
         confidence = 0.5
     confidence = min(1.0, max(0.0, confidence))
-    initialize_database()
-    now = utc_now()
-    with transaction() as connection:
-        connection.execute(
-            """
-            INSERT INTO learning(
-                id, person_id, domain, claim, confidence, review_state,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 'unreviewed', ?, ?)
-            """,
-            (new_id(), DEFAULT_PERSON_ID, domain, claim, confidence, now, now),
+    opportunity_id = str(arguments.get("opportunityId") or "").strip() or None
+    scope = str(arguments.get("scope") or ("opportunity" if opportunity_id else "person"))
+    evidence: list[dict[str, Any]] = []
+    evidence_id = str(arguments.get("evidenceId") or "").strip()
+    if evidence_id:
+        evidence.append(
+            {
+                "entityType": str(
+                    arguments.get("evidenceType")
+                    or ("job_process" if opportunity_id else "profile_fact")
+                ),
+                "entityId": evidence_id,
+                "polarity": str(arguments.get("polarity") or "supports"),
+                "excerpt": str(arguments.get("evidence") or "").strip(),
+            }
         )
+    result = record_hypothesis(
+        claim=claim,
+        domain=domain,
+        confidence=confidence,
+        scope=scope,
+        process_id=opportunity_id,
+        evidence=evidence,
+    )
     return _ok(
-        "Recorded as something I think I'm seeing. It stays a hunch until they confirm it."
+        "Recorded as something I think I'm seeing. It stays a hunch until they confirm it.",
+        learningId=result["id"],
+        created=result["created"],
     )
 
 
@@ -243,7 +258,7 @@ def tool_record_progress(arguments: dict[str, Any]) -> str:
     # Juno reporting it again in the same turn would show the user one action twice.
     if progress_recorded_this_turn():
         return _ok("Already on their progress from what you just did.")
-    add_progress_event(
+    events.record_progress(
         kind=str(arguments.get("kind") or "insight").strip().lower(),
         headline=headline,
         detail=str(arguments.get("detail") or "").strip() or None,
@@ -507,6 +522,31 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "claim": {"type": "string", "description": "The pattern, stated tentatively."},
                 "domain": {"type": "string", "enum": list(LEARNING_DOMAINS)},
                 "confidence": {"type": "number", "description": "0 to 1."},
+                "scope": {
+                    "type": "string",
+                    "enum": ["person", "opportunity", "market"],
+                    "description": "Where this interpretation applies. Defaults to opportunity when one is supplied.",
+                },
+                "opportunityId": {
+                    "type": "string",
+                    "description": "Required for an opportunity-scoped interpretation.",
+                },
+                "evidenceType": {
+                    "type": "string",
+                    "description": "Type of stored record supporting or contradicting the claim.",
+                },
+                "evidenceId": {
+                    "type": "string",
+                    "description": "ID of the exact stored record used as evidence.",
+                },
+                "evidence": {
+                    "type": "string",
+                    "description": "Brief excerpt explaining what in the evidence matters.",
+                },
+                "polarity": {
+                    "type": "string",
+                    "enum": ["supports", "contradicts", "neutral"],
+                },
             },
             "required": ["claim"],
         },

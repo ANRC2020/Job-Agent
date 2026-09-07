@@ -4,10 +4,8 @@ import json
 from typing import Any, Iterator
 from urllib.request import Request, urlopen
 
-from job_agent import person
 from job_agent.config import load_config
 from job_agent.paths import system_prompt_path
-from job_agent.personalization import personalization_prompt
 from job_agent.reasoning import ThinkingFilter, strip_thinking
 from job_agent.repo_tools import CHAT_TOOL_NAMES, call_tool, openai_tools
 from job_agent.storage import begin_turn
@@ -26,6 +24,17 @@ TOOL_ACTIVITY: dict[str, str] = {
     "record_progress": "Marking your progress",
     "save_experience": "Adding to your background",
     "search_memory": "Looking through what I remember",
+}
+
+OPPORTUNITY_BOUND_TOOLS = {
+    "get_opportunity",
+    "set_opportunity_stage",
+    "add_opportunity_note",
+    "save_application_material",
+    "note_observation",
+    "record_progress",
+    "search_memory",
+    "search_database",
 }
 
 
@@ -71,7 +80,7 @@ def system_message(context: str = "") -> dict[str, str]:
     prompt = system_prompt_path().read_text(encoding="utf-8")
     return {
         "role": "system",
-        "content": prompt + person.context_block() + context + personalization_prompt(),
+        "content": prompt + context,
     }
 
 
@@ -93,6 +102,7 @@ def _run_calls(
     messages: list[dict[str, Any]],
     traces: list[dict[str, Any]],
     said: str = "",
+    opportunity_id: str | None = None,
 ) -> None:
     messages.append(
         {
@@ -115,7 +125,21 @@ def _run_calls(
             arguments = {}
         if not isinstance(arguments, dict):
             arguments = {}
-        result = call_tool(call["name"], arguments)
+        invoked_name = call["name"]
+        if opportunity_id and call["name"] == "get_opportunities":
+            invoked_name = "get_opportunity"
+            arguments = {"opportunityId": opportunity_id}
+        if opportunity_id and call["name"] in OPPORTUNITY_BOUND_TOOLS:
+            requested = str(arguments.get("opportunityId") or "").strip()
+            if requested and requested != opportunity_id:
+                result = "Tool error: that action belongs to a different opportunity context"
+            else:
+                arguments["opportunityId"] = opportunity_id
+                if call["name"] == "note_observation":
+                    arguments["scope"] = "opportunity"
+                result = call_tool(invoked_name, arguments)
+        else:
+            result = call_tool(invoked_name, arguments)
         traces.append(
             {
                 "tool": call["name"],
@@ -139,6 +163,7 @@ def complete(
     *,
     context: str = "",
     tool_names: tuple[str, ...] | None = CHAT_TOOL_NAMES,
+    opportunity_id: str | None = None,
 ) -> dict[str, Any]:
     cfg = load_config()
     begin_turn()
@@ -167,6 +192,7 @@ def complete(
             messages,
             traces,
             content,
+            opportunity_id,
         )
     return {"content": "\n\n".join(spoken).strip(), "tools": traces, "model": cfg.model}
 
@@ -177,6 +203,7 @@ def stream(
     context: str = "",
     tool_names: tuple[str, ...] | None = CHAT_TOOL_NAMES,
     max_tool_rounds: int = 6,
+    opportunity_id: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield Juno's turn as it happens: activity, text deltas, then a final result."""
     cfg = load_config()
@@ -230,7 +257,7 @@ def stream(
             break
         for call in calls:
             yield {"type": "activity", "text": activity_for(call["name"])}
-        _run_calls(calls, messages, traces, joined)
+        _run_calls(calls, messages, traces, joined, opportunity_id)
         if joined:
             yield {"type": "break"}
 

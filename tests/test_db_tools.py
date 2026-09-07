@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from job_agent import opportunities
 from job_agent.db_tools import (
     create_database_record,
     describe_database,
@@ -14,6 +15,7 @@ from job_agent.db_tools import (
     search_database,
     update_database_record,
 )
+from job_agent.learning import record_hypothesis
 from job_agent.repo_tools import TOOLS, call_tool
 from job_agent.storage import initialize_database
 
@@ -66,25 +68,20 @@ class DatabaseToolTests(unittest.TestCase):
                 "requirements_json": ["Python", "data modeling"],
             },
         )
-        process = self.create(
-            "job_process",
-            {"job_id": job["id"], "started_at": "2026-09-06T00:00:00+00:00"},
-        )
-
         updated = json.loads(
             update_database_record(
                 {
-                    "table": "job_process",
-                    "id": process["id"],
-                    "changes": {"current_stage": "applied", "next_action": "Follow up"},
+                    "table": "job",
+                    "id": job["id"],
+                    "changes": {"source_url": "https://example.test/jobs/climate"},
                 }
             )
         )["updated"]
         listed = json.loads(
             list_database_records(
                 {
-                    "table": "job_process",
-                    "filters": {"current_stage": "applied"},
+                    "table": "job",
+                    "filters": {"title": "Climate Data Engineer"},
                 }
             )
         )
@@ -92,7 +89,7 @@ class DatabaseToolTests(unittest.TestCase):
             get_database_record({"table": "job", "id": job["id"]})
         )["record"]
 
-        self.assertEqual("Follow up", updated["next_action"])
+        self.assertEqual("https://example.test/jobs/climate", updated["source_url"])
         self.assertEqual(1, listed["count"])
         self.assertEqual(["Python", "data modeling"], fetched["requirements_json"])
 
@@ -113,13 +110,10 @@ class DatabaseToolTests(unittest.TestCase):
                 "description": "Climate adaptation and resilience planning.",
             },
         )
-        learning = self.create(
-            "learning",
-            {
-                "domain": "job_preference",
-                "claim": "Prefers climate resilience roles.",
-                "confidence": 0.8,
-            },
+        learning = record_hypothesis(
+            domain="job_preference",
+            claim="Prefers climate resilience roles.",
+            confidence=0.6,
         )
 
         result = json.loads(
@@ -141,6 +135,95 @@ class DatabaseToolTests(unittest.TestCase):
             {"table": "schema_migration", "values": {"version": 999}},
         )
         self.assertIn("Unknown or protected table", result)
+
+    def test_generic_tools_cannot_rewrite_history_or_bypass_review(self) -> None:
+        conversation = self.create(
+            "conversation",
+            {
+                "started_at": "2026-09-06T00:00:00+00:00",
+                "kind": "general",
+            },
+        )
+        blocked_create = call_tool(
+            "create_database_record",
+            {
+                "table": "message",
+                "values": {
+                    "conversation_id": conversation["id"],
+                    "role": "user",
+                    "content": "Rewrite me",
+                    "occurred_at": "2026-09-06T00:00:00+00:00",
+                },
+            },
+        )
+        self.assertIn("app-managed", blocked_create)
+        blocked_process = call_tool(
+            "create_database_record",
+            {
+                "table": "job_process",
+                "values": {
+                    "job_id": "missing",
+                    "started_at": "2026-09-06T00:00:00+00:00",
+                    "current_stage": "offer",
+                },
+            },
+        )
+        self.assertIn("app-managed", blocked_process)
+
+        learning = record_hypothesis(
+            domain="other",
+            claim="A tentative pattern",
+            confidence=0.4,
+        )
+        blocked_review = call_tool(
+            "update_database_record",
+            {
+                "table": "learning",
+                "id": learning["id"],
+                "changes": {"review_state": "confirmed"},
+            },
+        )
+        self.assertIn("dedicated product operation", blocked_review)
+
+    def test_new_learning_cannot_start_confirmed(self) -> None:
+        result = call_tool(
+            "create_database_record",
+            {
+                "table": "learning",
+                "values": {
+                    "domain": "other",
+                    "claim": "Skip review",
+                    "confidence": 0.9,
+                    "review_state": "confirmed",
+                },
+            },
+        )
+        self.assertIn("app-managed", result)
+
+    def test_search_can_be_hard_scoped_to_one_opportunity(self) -> None:
+        first = opportunities.save_opportunity(
+            title="Writer One",
+            source_url="https://example.test/one",
+        )["id"]
+        second = opportunities.save_opportunity(
+            title="Writer Two",
+            source_url="https://example.test/two",
+        )["id"]
+        opportunities.add_note(first, "Discussed portfolio examples", kind="interview")
+        opportunities.add_note(second, "Discussed portfolio ownership", kind="interview")
+
+        result = json.loads(
+            search_database(
+                {
+                    "query": "portfolio",
+                    "scopes": ["interactions"],
+                    "opportunityId": first,
+                }
+            )
+        )
+
+        self.assertEqual(1, len(result["results"]["interactions"]))
+        self.assertIn("examples", result["results"]["interactions"][0]["summary"])
 
         result = call_tool(
             "list_database_records",

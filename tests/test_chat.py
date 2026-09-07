@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from job_agent.chat import activity_for
+from job_agent.chat import _run_calls, activity_for
 from job_agent.reasoning import ThinkingFilter, strip_thinking
 from job_agent.repo_tools import CHAT_TOOL_NAMES, openai_tools
 
@@ -76,6 +77,54 @@ class ToolSurfaceTests(unittest.TestCase):
             label = activity_for(name)
             self.assertNotIn("_", label)
             self.assertTrue(label[0].isupper())
+
+    def test_active_opportunity_cannot_be_overridden_by_a_tool_call(self) -> None:
+        messages = []
+        traces = []
+        with patch("job_agent.chat.call_tool") as call:
+            _run_calls(
+                [
+                    {
+                        "id": "call-1",
+                        "name": "get_opportunity",
+                        "arguments": '{"opportunityId":"other-opportunity"}',
+                    }
+                ],
+                messages,
+                traces,
+                opportunity_id="active-opportunity",
+            )
+
+        call.assert_not_called()
+        self.assertIn("different opportunity", traces[0]["result"])
+
+    def test_opportunity_chat_cannot_list_other_opportunities_or_create_person_patterns(self) -> None:
+        messages = []
+        traces = []
+        with patch("job_agent.chat.call_tool", return_value='{"found":true}') as call:
+            _run_calls(
+                [{"id": "call-1", "name": "get_opportunities", "arguments": "{}"}],
+                messages,
+                traces,
+                opportunity_id="active-opportunity",
+            )
+            _run_calls(
+                [
+                    {
+                        "id": "call-2",
+                        "name": "note_observation",
+                        "arguments": '{"claim":"A broad pattern","scope":"person"}',
+                    }
+                ],
+                messages,
+                traces,
+                opportunity_id="active-opportunity",
+            )
+
+        self.assertEqual("get_opportunity", call.call_args_list[0].args[0])
+        observation_arguments = call.call_args_list[1].args[1]
+        self.assertEqual("opportunity", observation_arguments["scope"])
+        self.assertEqual("active-opportunity", observation_arguments["opportunityId"])
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ import unittest
 from unittest.mock import patch
 
 from job_agent.db_tools import create_database_record
+from job_agent.learning import record_hypothesis
+from job_agent.person import review_observation
 from job_agent.personalization import personalization_data, personalization_prompt
 from job_agent.storage import initialize_database
 
@@ -28,23 +30,16 @@ class PersonalizationTests(unittest.TestCase):
         )["created"]
 
     def test_only_reviewed_learnings_enter_personalization(self) -> None:
-        self.create(
-            "learning",
-            {
-                "domain": "communication",
-                "claim": "Likes concise answers.",
-                "confidence": 0.9,
-                "review_state": "confirmed",
-            },
+        reviewed = record_hypothesis(
+            domain="communication",
+            claim="Likes concise answers.",
+            confidence=0.6,
         )
-        self.create(
-            "learning",
-            {
-                "domain": "communication",
-                "claim": "Possibly likes excessive enthusiasm.",
-                "confidence": 0.6,
-                "review_state": "unreviewed",
-            },
+        review_observation(reviewed["id"], "confirmed")
+        record_hypothesis(
+            domain="communication",
+            claim="Possibly likes excessive enthusiasm.",
+            confidence=0.6,
         )
 
         data = personalization_data()

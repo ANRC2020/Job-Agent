@@ -159,9 +159,13 @@ def profile_overview(person_id: str = DEFAULT_PERSON_ID) -> dict[str, Any]:
             dict(row)
             for row in connection.execute(
                 """
-                SELECT id, domain, claim, confidence, review_state, updated_at
+                SELECT id, domain, scope, process_id, claim, confidence, review_state,
+                       lifecycle_state, support_count, contradiction_count,
+                       reviewed_at, updated_at,
+                       (SELECT COUNT(*) FROM learning_evidence e WHERE e.learning_id = learning.id)
+                           AS evidence_count
                 FROM learning
-                WHERE person_id = ? AND status = 'active' AND review_state != 'rejected'
+                WHERE person_id = ? AND status IN ('active', 'disputed') AND review_state != 'rejected'
                 ORDER BY
                     CASE review_state WHEN 'unreviewed' THEN 0 ELSE 1 END,
                     confidence DESC,
@@ -227,8 +231,20 @@ def profile_overview(person_id: str = DEFAULT_PERSON_ID) -> dict[str, Any]:
                 "id": item["id"],
                 "claim": str(item["claim"]),
                 "domain": str(item["domain"]),
+                "scope": str(item["scope"]),
+                "opportunityId": item["process_id"],
                 "confidence": item["confidence"],
-                "confirmed": item["review_state"] in {"confirmed", "edited"},
+                "reviewState": str(item["review_state"]),
+                "lifecycleState": str(item["lifecycle_state"]),
+                "supportCount": int(item["support_count"] or 0),
+                "contradictionCount": int(item["contradiction_count"] or 0),
+                "evidenceCount": int(item["evidence_count"] or 0),
+                "reviewedAt": item["reviewed_at"],
+                "updatedAt": item["updated_at"],
+                "confirmed": (
+                    item["review_state"] in {"confirmed", "edited"}
+                    and item["lifecycle_state"] != "disputed"
+                ),
             }
             for item in learnings
         ],
@@ -261,24 +277,21 @@ def dismiss_fact(fact_id: str, person_id: str = DEFAULT_PERSON_ID) -> None:
 def review_observation(
     learning_id: str,
     verdict: str,
+    *,
+    edited_claim: str = "",
+    note: str = "",
     person_id: str = DEFAULT_PERSON_ID,
 ) -> None:
     """Let the user confirm or reject one of Juno's interpretations."""
-    if verdict not in {"confirmed", "rejected"}:
-        raise ValueError("verdict must be confirmed or rejected")
-    with transaction() as connection:
-        cursor = connection.execute(
-            """
-            UPDATE learning SET
-                review_state = ?,
-                status = CASE WHEN ? = 'rejected' THEN 'archived' ELSE status END,
-                updated_at = ?
-            WHERE id = ? AND person_id = ?
-            """,
-            (verdict, verdict, utc_now(), learning_id, person_id),
-        )
-        if cursor.rowcount == 0:
-            raise ValueError("Juno no longer has that observation.")
+    from job_agent.learning import review_learning
+
+    review_learning(
+        learning_id,
+        verdict,
+        edited_claim=edited_claim,
+        note=note,
+        person_id=person_id,
+    )
 
 
 def remember_fact(

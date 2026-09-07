@@ -16,6 +16,7 @@ from job_agent.reasoning import strip_thinking
 APP_NAME = "Clover"
 LEGACY_APP_NAME = "Job Agent"
 DEFAULT_PERSON_ID = "local-user"
+DATABASE_FILENAMES = ("clover.sqlite3", "job-agent.sqlite3")
 
 
 def utc_now() -> str:
@@ -31,16 +32,35 @@ def app_data_dir() -> Path:
         root = Path.home() / "Library" / "Application Support"
         current = root / APP_NAME
         legacy = root / LEGACY_APP_NAME
-        return current if current.exists() or not legacy.exists() else legacy
+        return _preferred_data_dir(current, legacy)
     if system == "Windows":
         root = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
         current = root / APP_NAME
         legacy = root / LEGACY_APP_NAME
-        return current if current.exists() or not legacy.exists() else legacy
+        return _preferred_data_dir(current, legacy)
     root = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
     current = root / "clover"
     legacy = root / "job-agent"
-    return current if current.exists() or not legacy.exists() else legacy
+    return _preferred_data_dir(current, legacy)
+
+
+def _preferred_data_dir(current: Path, legacy: Path) -> Path:
+    """Prefer the directory that actually contains data, not merely one that exists.
+
+    Older installers may have created an empty Clover directory before the
+    rebrand-aware build first ran. In that case the legacy database remains the
+    source of truth. If both directories contain databases, the current Clover
+    directory wins and neither file is moved or overwritten.
+    """
+    current_has_database = any((current / name).is_file() for name in DATABASE_FILENAMES)
+    legacy_has_database = any((legacy / name).is_file() for name in DATABASE_FILENAMES)
+    if current_has_database:
+        return current
+    if legacy_has_database:
+        return legacy
+    if current.exists() or not legacy.exists():
+        return current
+    return legacy
 
 
 def database_path() -> Path:
@@ -82,6 +102,7 @@ def transaction(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     connection = connect(path)
     try:
         with connection:
+            connection.execute("BEGIN IMMEDIATE")
             yield connection
     finally:
         connection.close()
@@ -108,6 +129,24 @@ def _checksum(content: bytes) -> str:
     import hashlib
 
     return hashlib.sha256(content).hexdigest()
+
+
+def _execute_script(connection: sqlite3.Connection, script: str) -> None:
+    """Execute a migration statement-by-statement inside the caller's transaction.
+
+    sqlite3.executescript() commits before it starts, which can leave half a
+    migration behind if a later statement fails. complete_statement() keeps
+    trigger bodies intact while allowing normal transaction rollback.
+    """
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                connection.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise RuntimeError("Migration ended with an incomplete SQL statement.")
 
 
 def initialize_database(path: Path | None = None) -> dict[str, Any]:
@@ -137,7 +176,7 @@ def initialize_database(path: Path | None = None) -> dict[str, Any]:
                         "Add a new migration instead of editing an applied migration."
                     )
                 continue
-            connection.executescript(content.decode("utf-8"))
+            _execute_script(connection, content.decode("utf-8"))
             connection.execute(
                 """
                 INSERT INTO schema_migration(version, name, checksum, applied_at)
@@ -263,6 +302,8 @@ def ensure_thread(
     where she left off instead of starting over each visit.
     """
     initialize_database()
+    conversation_id = new_id()
+    now = utc_now()
     with transaction() as connection:
         if job_process_id:
             row = connection.execute(
@@ -284,12 +325,36 @@ def ensure_thread(
             ).fetchone()
         if row is not None:
             return str(row["id"])
-    return create_conversation(
-        person_id=person_id,
-        title=title,
-        kind=kind,
-        job_process_id=job_process_id,
-    )
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO conversation(
+                id, person_id, channel, title, started_at, created_at, updated_at,
+                kind, job_process_id
+            ) VALUES (?, ?, 'app', ?, ?, ?, ?, ?, ?)
+            """,
+            (conversation_id, person_id, title, now, now, now, kind, job_process_id),
+        )
+        if job_process_id:
+            row = connection.execute(
+                """
+                SELECT id FROM conversation
+                WHERE person_id = ? AND job_process_id = ?
+                ORDER BY started_at, rowid LIMIT 1
+                """,
+                (person_id, job_process_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id FROM conversation
+                WHERE person_id = ? AND kind = ? AND job_process_id IS NULL
+                ORDER BY started_at, rowid LIMIT 1
+                """,
+                (person_id, kind),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Clover could not create a durable conversation thread.")
+        return str(row["id"])
 
 
 def list_messages(conversation_id: str, limit: int = 200) -> list[dict[str, Any]]:
@@ -298,7 +363,7 @@ def list_messages(conversation_id: str, limit: int = 200) -> list[dict[str, Any]
     with connect() as connection:
         rows = connection.execute(
             """
-            SELECT id, role, content, occurred_at
+            SELECT id, role, content, occurred_at, model_run_id
             FROM message
             WHERE conversation_id = ? AND role IN ('user', 'assistant')
             ORDER BY occurred_at DESC, rowid DESC
@@ -479,3 +544,84 @@ def add_model_run(
             ),
         )
     return run_id
+
+
+def add_tool_actions(
+    conversation_id: str,
+    model_run_id: str,
+    actions: list[dict[str, Any]],
+) -> list[str]:
+    """Persist compact tool traces for transparency and future turn context."""
+    if not actions:
+        return []
+    now = utc_now()
+    action_ids: list[str] = []
+    with transaction() as connection:
+        for action in actions:
+            action_id = new_id()
+            action_ids.append(action_id)
+            connection.execute(
+                """
+                INSERT INTO tool_action(
+                    id, conversation_id, model_run_id, tool_name, activity,
+                    arguments_json, result_summary, status,
+                    occurred_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    action_id,
+                    conversation_id,
+                    model_run_id,
+                    str(action.get("tool") or "unknown"),
+                    str(action.get("activity") or "") or None,
+                    json_value(action.get("arguments") or {}),
+                    str(action.get("result") or "")[:4_000] or None,
+                    tool_action_status(str(action.get("result") or "")),
+                    now,
+                    now,
+                    now,
+                ),
+            )
+    return action_ids
+
+
+def tool_action_status(result: str) -> str:
+    clean = (result or "").strip()
+    if clean.startswith(("Tool error:", "Unknown tool:")):
+        return "failed"
+    try:
+        payload = json.loads(clean)
+    except json.JSONDecodeError:
+        return "completed"
+    if isinstance(payload, dict) and payload.get("approvalRequired"):
+        return "pending"
+    if isinstance(payload, dict) and payload.get("ok") is False:
+        return "failed"
+    return "completed"
+
+
+def list_tool_actions(conversation_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Return recent actions in chronological order for replay and UI disclosure."""
+    initialize_database()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, model_run_id, tool_name, activity, arguments_json,
+                   result_summary, status, occurred_at
+            FROM tool_action
+            WHERE conversation_id = ?
+            ORDER BY occurred_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (conversation_id, max(1, min(limit, 200))),
+        ).fetchall()
+    actions = []
+    for row in reversed(rows):
+        item = dict(row)
+        try:
+            item["arguments"] = json.loads(item.pop("arguments_json"))
+        except (json.JSONDecodeError, TypeError):
+            item["arguments"] = {}
+            item.pop("arguments_json", None)
+        actions.append(item)
+    return actions

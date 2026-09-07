@@ -104,6 +104,45 @@ export function openSettings() {
       )
     );
 
+    if (data.pendingActions?.length) {
+      body.append(
+        el(
+          "div",
+          { class: "stack stack-3" },
+          el("div", { class: "eyebrow", text: "Waiting for your approval" }),
+          data.pendingActions.map((item) =>
+            el(
+              "div",
+              { class: "card-quiet stack stack-2" },
+              el("div", { text: item.explanation }),
+              el(
+                "div",
+                { class: "actions" },
+                el("button", {
+                  class: "btn",
+                  type: "button",
+                  text: "Approve",
+                  onClick: async () => {
+                    await api.post(`/api/approvals/${item.id}`, { approved: true });
+                    draw();
+                  },
+                }),
+                el("button", {
+                  class: "btn btn-quiet",
+                  type: "button",
+                  text: "Reject",
+                  onClick: async () => {
+                    await api.post(`/api/approvals/${item.id}`, { approved: false });
+                    draw();
+                  },
+                })
+              )
+            )
+          )
+        )
+      );
+    }
+
     // Where the data lives
     body.append(
       el(

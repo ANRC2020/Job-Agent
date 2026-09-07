@@ -25,9 +25,9 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
   const reload = (message) => nav.openOpportunity(id, message);
 
   async function move(stage, { reason = "", outcome = "", message = "" } = {}) {
-    await api.post(`/api/opportunities/${id}/stage`, { stage, reason, outcome });
+    const result = await api.post(`/api/opportunities/${id}/stage`, { stage, reason, outcome });
     nav.refreshCounts();
-    reload(message);
+    reload(result.reflection?.prompt || message);
   }
 
   function talk(prompt) {
@@ -287,6 +287,7 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
   const chat = createChat({
     opportunityId: id,
     messages: data.messages,
+    actions: data.actions || [],
     suggestions: data.messages.length ? [] : CHAT_OPENERS[data.stage] || [],
     placeholder: `Ask Juno about this role…`,
     intro: el(

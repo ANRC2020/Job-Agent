@@ -93,6 +93,13 @@ class OpportunityTests(unittest.TestCase):
 
         self.assertEqual(before, len(opp.get_opportunity(process_id)["history"]))
 
+    def test_stage_change_preserves_the_next_action(self) -> None:
+        process_id = self.save(stage="interested", next_action="Tailor the resume")
+
+        opp.set_stage(process_id, "applying")
+
+        self.assertEqual("Tailor the resume", opp.get_opportunity(process_id)["nextAction"])
+
     def test_deciding_against_a_role_counts_as_progress(self) -> None:
         process_id = self.save()
         opp.set_stage(process_id, "closed", outcome="not_a_fit", reason="Too much travel")

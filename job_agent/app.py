@@ -13,24 +13,33 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from job_agent import onboarding, opportunities, person
+from job_agent import events, onboarding, opportunities, person
+from job_agent.autonomy import complete_approval, list_pending_actions, resolve_approval
 from job_agent.branding import apply_app_branding
 from job_agent.chat import stream as chat_stream
 from job_agent.config import load_config
+from job_agent.context import build_turn_context
 from job_agent.documents import save_document_base64, save_pasted_text
 from job_agent.home import home_overview
+from job_agent.learning import learning_detail
 from job_agent.personalization import personalization_data
 from job_agent.readiness import readiness, technical_status
+from job_agent.reflection import reflection_for_stage
+from job_agent.repo_tools import call_tool
 from job_agent.runtime import start_runtime, stop_runtime, switch_model
 from job_agent.setup import run_setup
 from job_agent.storage import (
     add_message,
     add_model_run,
+    add_tool_actions,
     ensure_thread,
     initialize_database,
     list_messages,
+    list_tool_actions,
+    tool_action_status,
     touch_conversation,
 )
+from job_agent.strategy import strategy_summary
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -59,6 +68,8 @@ MUTATING_TOOLS = {
 
 MAX_HISTORY_TURNS = 24
 MAX_TURN_CHARS = 6_000
+_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
 
 
 class ClientGone(Exception):
@@ -69,6 +80,27 @@ def _thread_for(opportunity_id: str | None) -> str:
     if opportunity_id:
         return opportunities.thread_id(opportunity_id)
     return ensure_thread(kind="juno", title="Juno")
+
+
+def _serialized_chat(method):
+    """Prevent overlapping model runs from interleaving one durable thread."""
+    def wrapped(self, payload: dict[str, Any]) -> None:
+        opportunity_id = str(payload.get("opportunityId") or "").strip() or None
+        thread_id = _thread_for(opportunity_id)
+        with _THREAD_LOCKS_GUARD:
+            lock = _THREAD_LOCKS.setdefault(thread_id, threading.Lock())
+        if not lock.acquire(blocking=False):
+            self._json(
+                {"error": "Juno is still finishing the previous message in this conversation."},
+                409,
+            )
+            return
+        try:
+            method(self, {**payload, "_threadId": thread_id})
+        finally:
+            lock.release()
+
+    return wrapped
 
 
 def _model_messages(thread_id: str) -> list[dict[str, str]]:
@@ -154,7 +186,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._json({"error": str(exc)}, 400)
             except Exception as exc:  # noqa: BLE001
-                self._json({"error": str(exc)}, 500)
+                print(f"Clover API error: {exc}", file=sys.stderr, flush=True)
+                self._json({"error": "Clover couldn't complete that request."}, 500)
             return
         self._json({"error": "Not found"}, 404)
 
@@ -196,15 +229,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def get_thread(self, query: dict[str, Any]) -> None:
         thread_id = ensure_thread(kind="juno", title="Juno")
-        self._json({"threadId": thread_id, "messages": list_messages(thread_id)})
+        self._json(
+            {
+                "threadId": thread_id,
+                "messages": list_messages(thread_id),
+                "actions": list_tool_actions(thread_id),
+            }
+        )
+
+    def get_learning(self, query: dict[str, Any], learning_id: str = "") -> None:
+        detail = learning_detail(learning_id)
+        if detail is None:
+            self._json({"error": "That observation is no longer in Clover."}, 404)
+            return
+        self._json(detail)
 
     def get_settings(self, query: dict[str, Any]) -> None:
         self._json(
             {
                 "personalization": personalization_data(),
+                "pendingActions": list_pending_actions(),
                 "engine": technical_status(),
             }
         )
+
+    def get_strategy(self, query: dict[str, Any]) -> None:
+        self._json(strategy_summary())
 
     # --- writes -----------------------------------------------------------
 
@@ -243,17 +293,18 @@ class Handler(BaseHTTPRequestHandler):
         self._json(result)
 
     def post_opportunity_stage(self, payload: dict[str, Any], opportunity_id: str = "") -> None:
-        self._json(
-            opportunities.set_stage(
-                opportunity_id,
-                str(payload.get("stage") or ""),
-                reason=str(payload.get("reason") or ""),
-                outcome=str(payload.get("outcome") or ""),
-            )
+        stage = str(payload.get("stage") or "")
+        result = events.transition_stage(
+            opportunity_id,
+            stage,
+            reason=str(payload.get("reason") or ""),
+            outcome=str(payload.get("outcome") or ""),
         )
+        result["reflection"] = reflection_for_stage(opportunity_id, stage)
+        self._json(result)
 
     def post_opportunity_note(self, payload: dict[str, Any], opportunity_id: str = "") -> None:
-        note_id = opportunities.add_note(
+        note_id = events.record_interaction(
             opportunity_id,
             str(payload.get("text") or ""),
             kind=str(payload.get("kind") or "note"),
@@ -261,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"id": note_id})
 
     def post_opportunity_reaction(self, payload: dict[str, Any], opportunity_id: str = "") -> None:
-        opportunities.record_reaction(opportunity_id, str(payload.get("reaction") or ""))
+        events.record_reaction(opportunity_id, str(payload.get("reaction") or ""))
         self._json({"ok": True})
 
     def post_fact_dismiss(self, payload: dict[str, Any], fact_id: str = "") -> None:
@@ -269,8 +320,34 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True})
 
     def post_observation_review(self, payload: dict[str, Any], observation_id: str = "") -> None:
-        person.review_observation(observation_id, str(payload.get("verdict") or ""))
+        person.review_observation(
+            observation_id,
+            str(payload.get("verdict") or ""),
+            edited_claim=str(payload.get("claim") or ""),
+            note=str(payload.get("note") or ""),
+        )
         self._json({"ok": True})
+
+    def post_approval(self, payload: dict[str, Any], action_id: str = "") -> None:
+        resolution = resolve_approval(action_id, bool(payload.get("approved")))
+        if not resolution["approved"]:
+            self._json({"ok": True, "status": "rejected"})
+            return
+        result = call_tool(
+            str(resolution["actionName"]),
+            resolution["arguments"],
+            approval_granted=True,
+        )
+        succeeded = not result.startswith(("Tool error:", "Unknown tool:"))
+        complete_approval(action_id, succeeded=succeeded)
+        self._json(
+            {
+                "ok": succeeded,
+                "status": "completed" if succeeded else "failed",
+                "result": result if succeeded else "The approved action could not be completed.",
+            },
+            200 if succeeded else 500,
+        )
 
     def post_engine(self, payload: dict[str, Any], action: str = "") -> None:
         logs: list[str] = []
@@ -289,6 +366,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- Juno's turn ------------------------------------------------------
 
+    @_serialized_chat
     def post_chat(self, payload: dict[str, Any]) -> None:
         message = str(payload.get("message") or "").strip()
         opportunity_id = str(payload.get("opportunityId") or "").strip() or None
@@ -296,10 +374,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "Nothing to send."}, 400)
             return
 
-        thread_id = _thread_for(opportunity_id)
+        thread_id = str(payload["_threadId"])
         add_message(thread_id, "user", message)
         history = _model_messages(thread_id)
-        context = opportunities.context_block(opportunity_id) if opportunity_id else ""
+        context = build_turn_context(
+            conversation_id=thread_id,
+            process_id=opportunity_id,
+            task=message,
+        )
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -318,7 +400,7 @@ class Handler(BaseHTTPRequestHandler):
         started = time.monotonic()
         result: dict[str, Any] = {}
         try:
-            for event in chat_stream(history, context=context):
+            for event in chat_stream(history, context=context, opportunity_id=opportunity_id):
                 if event["type"] == "done":
                     result = event
                     continue
@@ -326,6 +408,7 @@ class Handler(BaseHTTPRequestHandler):
         except ClientGone:
             raise
         except Exception as exc:  # noqa: BLE001
+            print(f"Juno chat error: {exc}", file=sys.stderr, flush=True)
             emit(
                 {
                     "type": "error",
@@ -333,7 +416,6 @@ class Handler(BaseHTTPRequestHandler):
                         "Juno couldn't finish that thought. She may still be waking up — "
                         "give it a moment and try again."
                     ),
-                    "detail": str(exc),
                 }
             )
             emit({"type": "end"})
@@ -356,6 +438,7 @@ class Handler(BaseHTTPRequestHandler):
                 latency_ms=int((time.monotonic() - started) * 1000),
             )
             add_message(thread_id, "assistant", content, model_run_id=run_id)
+            add_tool_actions(thread_id, run_id, traces)
         else:
             touch_conversation(thread_id)
         emit(
@@ -364,6 +447,14 @@ class Handler(BaseHTTPRequestHandler):
                 "content": content,
                 "changed": bool(kept) or any(trace.get("tool") in MUTATING_TOOLS for trace in traces),
                 "activity": [trace.get("activity") for trace in traces],
+                "actions": [
+                    {
+                        "tool": trace.get("tool"),
+                        "activity": trace.get("activity"),
+                        "status": tool_action_status(str(trace.get("result") or "")),
+                    }
+                    for trace in traces
+                ],
             }
         )
 
@@ -374,9 +465,11 @@ class Handler(BaseHTTPRequestHandler):
         ("opportunities",): "get_opportunities",
         ("opportunities", ":opportunity_id"): "get_opportunity",
         ("profile",): "get_profile",
+        ("learnings", ":learning_id"): "get_learning",
         ("onboarding",): "get_onboarding",
         ("thread",): "get_thread",
         ("settings",): "get_settings",
+        ("strategy",): "get_strategy",
     }
 
     POST_ROUTES: dict[tuple[str, ...], str] = {
@@ -391,6 +484,7 @@ class Handler(BaseHTTPRequestHandler):
         ("opportunities", ":opportunity_id", "reaction"): "post_opportunity_reaction",
         ("profile", "facts", ":fact_id", "dismiss"): "post_fact_dismiss",
         ("profile", "observations", ":observation_id", "review"): "post_observation_review",
+        ("approvals", ":action_id"): "post_approval",
         ("engine", ":action"): "post_engine",
     }
 
