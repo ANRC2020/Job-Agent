@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from job_agent.agent_tools import TOOLS as PRODUCT_TOOLS
 from job_agent.db_tools import (
     create_database_record,
     describe_database,
@@ -57,7 +58,7 @@ def tool_get_system_prompt(_: dict[str, Any]) -> str:
     return prompt.read_text(encoding="utf-8")
 
 
-TOOLS: dict[str, dict[str, Any]] = {
+REPO_AND_DB_TOOLS: dict[str, dict[str, Any]] = {
     "list_repo_files": {
         "description": "List files and folders inside the job-agent repository.",
         "schema": {
@@ -229,8 +230,32 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
 }
 
+TOOLS: dict[str, dict[str, Any]] = {**PRODUCT_TOOLS, **REPO_AND_DB_TOOLS}
 
-def openai_tools() -> list[dict[str, Any]]:
+# In the app, Juno gets the product-shaped tools plus recall. Repository browsing
+# and raw table access stay available over MCP for debugging, but showing them to
+# a career companion only makes her slower and less predictable.
+CHAT_TOOL_NAMES: tuple[str, ...] = (*PRODUCT_TOOLS, "search_memory")
+
+SEARCH_MEMORY_ALIAS = "search_memory"
+
+
+def openai_tools(names: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+    selected = names or tuple(TOOLS)
+    specs: list[tuple[str, dict[str, Any]]] = []
+    for name in selected:
+        if name == SEARCH_MEMORY_ALIAS:
+            spec = dict(TOOLS["search_database"])
+            spec["description"] = (
+                "Search everything Clover remembers — past conversations, the user's documents, "
+                "opportunities, interactions, and observations. Use this to recall context before "
+                "asking the user to repeat themselves."
+            )
+            specs.append((SEARCH_MEMORY_ALIAS, spec))
+            continue
+        spec = TOOLS.get(name)
+        if spec is not None:
+            specs.append((name, spec))
     return [
         {
             "type": "function",
@@ -240,12 +265,12 @@ def openai_tools() -> list[dict[str, Any]]:
                 "parameters": spec["schema"] or {"type": "object", "properties": {}},
             },
         }
-        for name, spec in TOOLS.items()
+        for name, spec in specs
     ]
 
 
 def call_tool(name: str, arguments: dict[str, Any] | None) -> str:
-    spec = TOOLS.get(name)
+    spec = TOOLS.get("search_database" if name == SEARCH_MEMORY_ALIAS else name)
     if spec is None:
         return f"Unknown tool: {name}"
     handler: Callable[[dict[str, Any]], str] = spec["handler"]

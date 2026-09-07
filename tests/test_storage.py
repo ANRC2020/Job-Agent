@@ -13,7 +13,9 @@ from job_agent.storage import (
     conversation_exists,
     create_conversation,
     database_status,
+    ensure_thread,
     initialize_database,
+    list_messages,
 )
 
 
@@ -32,11 +34,15 @@ class StorageTests(unittest.TestCase):
         second = initialize_database()
 
         self.assertEqual(
-            ["001_initial.sql", "002_person_memory_search.sql"],
+            [
+                "001_initial.sql",
+                "002_person_memory_search.sql",
+                "003_opportunity_context.sql",
+            ],
             first["migrationsApplied"],
         )
         self.assertEqual([], second["migrationsApplied"])
-        self.assertEqual(2, database_status()["schemaVersion"])
+        self.assertEqual(3, database_status()["schemaVersion"])
 
     def test_all_three_domains_are_installed(self) -> None:
         initialize_database()
@@ -97,6 +103,31 @@ class StorageTests(unittest.TestCase):
         initialize_database()
         with self.assertRaises(sqlite3.IntegrityError):
             add_message("missing-conversation", "user", "hello")
+
+
+class StoredReplyTests(unittest.TestCase):
+    """A reply written by an older build can carry a leaked reasoning tag."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.env = patch.dict(os.environ, {"JOB_AGENT_DATA_DIR": self.temp_dir.name})
+        self.env.start()
+        initialize_database()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        self.temp_dir.cleanup()
+
+    def test_leaked_reasoning_is_not_replayed_out_of_storage(self) -> None:
+        thread = ensure_thread(kind="juno", title="Juno")
+        add_message(thread, "assistant", "</think>\n\nHere's what I found.")
+        add_message(thread, "user", "What about </think> in my own text?")
+
+        turns = list_messages(thread)
+
+        self.assertEqual("Here's what I found.", turns[0]["content"])
+        # The user's words are theirs, and are left exactly as typed.
+        self.assertEqual("What about </think> in my own text?", turns[1]["content"])
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ DOMAIN_TABLES = {
         "recommendation_feedback",
         "strategy_experiment",
         "performance_metric",
+        "progress_event",
         "model_run",
     ],
 }
@@ -67,7 +68,8 @@ TABLE_GUIDANCE = {
     "job": "The normalized job posting: title, description, requirements, compensation, location, and source URL.",
     "job_process": (
         "The user's end-to-end pursuit of one job. current_stage is the present state; "
-        "also append a job_stage_event whenever the stage changes."
+        "also append a job_stage_event whenever the stage changes. fit_summary, why_json, "
+        "concerns_json, and standouts_json hold your visible reasoning about the role."
     ),
     "job_stage_event": "Append-only history of a job process stage transition; never rewrite prior events.",
     "job_contact": "A recruiter, interviewer, referral, or other contact within one job process.",
@@ -90,6 +92,10 @@ TABLE_GUIDANCE = {
     "recommendation_feedback": "Tracks whether a suggestion was accepted, rejected, ignored, edited, or acted on.",
     "strategy_experiment": "A measured change to search, communication, or application strategy.",
     "performance_metric": "A timestamped numeric outcome associated with a process or experiment.",
+    "progress_event": (
+        "A moment of real progress worth acknowledging, including deciding a role is not worth "
+        "pursuing. Never a target or a streak; absence of events is not failure."
+    ),
     "model_run": "Audit metadata for an LLM call. The app normally creates these automatically.",
 }
 
@@ -105,6 +111,10 @@ JSON_COLUMNS = {
     "compensation_json",
     "result_json",
     "output_json",
+    "why_json",
+    "concerns_json",
+    "standouts_json",
+    "onboarding_json",
 }
 
 PROTECTED_UPDATE_COLUMNS = {"id", "created_at"}

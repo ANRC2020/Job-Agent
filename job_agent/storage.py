@@ -4,12 +4,14 @@ import json
 import os
 import platform
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from job_agent.reasoning import strip_thinking
 
 APP_NAME = "Clover"
 LEGACY_APP_NAME = "Job Agent"
@@ -213,6 +215,8 @@ def create_conversation(
     person_id: str = DEFAULT_PERSON_ID,
     channel: str = "app",
     title: str | None = None,
+    kind: str = "general",
+    job_process_id: str | None = None,
 ) -> str:
     conversation_id = new_id()
     now = utc_now()
@@ -220,10 +224,11 @@ def create_conversation(
         connection.execute(
             """
             INSERT INTO conversation(
-                id, person_id, channel, title, started_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                id, person_id, channel, title, started_at, created_at, updated_at,
+                kind, job_process_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (conversation_id, person_id, channel, title, now, now, now),
+            (conversation_id, person_id, channel, title, now, now, now, kind, job_process_id),
         )
     return conversation_id
 
@@ -235,6 +240,176 @@ def conversation_exists(conversation_id: str) -> bool:
             (conversation_id,),
         ).fetchone()
     return row is not None
+
+
+def touch_conversation(conversation_id: str) -> None:
+    with transaction() as connection:
+        connection.execute(
+            "UPDATE conversation SET updated_at = ? WHERE id = ?",
+            (utc_now(), conversation_id),
+        )
+
+
+def ensure_thread(
+    *,
+    kind: str,
+    job_process_id: str | None = None,
+    title: str | None = None,
+    person_id: str = DEFAULT_PERSON_ID,
+) -> str:
+    """Return the durable thread for a context, creating it on first use.
+
+    Every opportunity keeps one thread for its whole life, so Juno picks up
+    where she left off instead of starting over each visit.
+    """
+    initialize_database()
+    with transaction() as connection:
+        if job_process_id:
+            row = connection.execute(
+                """
+                SELECT id FROM conversation
+                WHERE person_id = ? AND job_process_id = ?
+                ORDER BY started_at LIMIT 1
+                """,
+                (person_id, job_process_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT id FROM conversation
+                WHERE person_id = ? AND kind = ? AND job_process_id IS NULL
+                ORDER BY started_at LIMIT 1
+                """,
+                (person_id, kind),
+            ).fetchone()
+        if row is not None:
+            return str(row["id"])
+    return create_conversation(
+        person_id=person_id,
+        title=title,
+        kind=kind,
+        job_process_id=job_process_id,
+    )
+
+
+def list_messages(conversation_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    """Return visible turns for a thread, oldest first."""
+    initialize_database()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, role, content, occurred_at
+            FROM message
+            WHERE conversation_id = ? AND role IN ('user', 'assistant')
+            ORDER BY occurred_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (conversation_id, max(1, min(limit, 500))),
+        ).fetchall()
+
+    # A database written by an earlier build can hold reasoning tags that leaked
+    # into a stored reply. Scrub on the way out so they neither show up in the
+    # conversation nor get replayed into the model's context.
+    turns = []
+    for row in reversed(rows):
+        turn = dict(row)
+        if turn["role"] == "assistant":
+            turn["content"] = strip_thinking(str(turn["content"] or ""))
+        turns.append(turn)
+    return turns
+
+
+PROGRESS_DEDUPE_SECONDS = 600
+
+# Clover records progress itself whenever it changes something, and Juno may also
+# report the same action in the same turn — under a different name, so matching on
+# kind alone can't catch it. Anything Clover recorded during the current turn is
+# tracked here so her own report can defer to it.
+_turn = threading.local()
+
+
+def begin_turn() -> None:
+    """Start of one of Juno's turns."""
+    _turn.recorded = []
+
+
+def progress_recorded_this_turn() -> bool:
+    return bool(getattr(_turn, "recorded", None))
+
+
+def add_progress_event(
+    *,
+    kind: str,
+    headline: str,
+    detail: str | None = None,
+    process_id: str | None = None,
+    person_id: str = DEFAULT_PERSON_ID,
+    metadata: Any = None,
+) -> str:
+    """Record a moment of progress.
+
+    A repeat of the same kind on the same opportunity within a few minutes is
+    treated as the same moment rather than a second one.
+    """
+    event_id = new_id()
+    now = utc_now()
+    with transaction() as connection:
+        recent = connection.execute(
+            """
+            SELECT id FROM progress_event
+            WHERE person_id = ?
+              AND kind = ?
+              AND COALESCE(process_id, '') = COALESCE(?, '')
+              AND occurred_at > datetime(?, ?)
+            LIMIT 1
+            """,
+            (person_id, kind, process_id, now, f"-{PROGRESS_DEDUPE_SECONDS} seconds"),
+        ).fetchone()
+        if recent is not None:
+            return str(recent["id"])
+        connection.execute(
+            """
+            INSERT INTO progress_event(
+                id, person_id, process_id, kind, headline, detail,
+                occurred_at, metadata_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                person_id,
+                process_id,
+                kind,
+                headline,
+                detail,
+                now,
+                json_value(metadata or {}),
+                now,
+                now,
+            ),
+        )
+    if hasattr(_turn, "recorded"):
+        _turn.recorded.append(event_id)
+    return event_id
+
+
+def list_progress_events(
+    *,
+    person_id: str = DEFAULT_PERSON_ID,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    initialize_database()
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, kind, headline, detail, occurred_at, process_id
+            FROM progress_event
+            WHERE person_id = ?
+            ORDER BY occurred_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (person_id, max(1, min(limit, 100))),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def add_message(
