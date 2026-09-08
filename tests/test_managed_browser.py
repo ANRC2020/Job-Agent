@@ -51,6 +51,8 @@ class FakePage:
         self.captures = captures
         self.filled: list[dict] = []
         self.clicks = 0
+        self.selected = ""
+        self.upload = None
 
     def is_closed(self) -> bool:
         return False
@@ -61,7 +63,8 @@ class FakePage:
         self.filled = list(argument or [])
         return {"filled": len(self.filled), "skipped": 0}
 
-    def locator(self, _selector: str):
+    def locator(self, selector: str):
+        self.selected = selector
         return self
 
     def click(self) -> None:
@@ -69,6 +72,9 @@ class FakePage:
 
     def wait_for_timeout(self, _milliseconds: int) -> None:
         pass
+
+    def set_input_files(self, payload) -> None:
+        self.upload = payload
 
 
 class ManagedBrowserTests(unittest.TestCase):
@@ -96,7 +102,7 @@ class ManagedBrowserTests(unittest.TestCase):
             ]
         }
         browser = ManagedBrowser()
-        fake = FakePage([page(), page(), page(value="Abbas", submit=True)])
+        fake = FakePage([page(), page(), page(), page(value="Abbas", submit=True)])
         browser._page = fake
         browser._state.update({"running": True, "phase": "watching"})
 
@@ -115,7 +121,12 @@ class ManagedBrowserTests(unittest.TestCase):
         sensitive = [{"label": "Veteran status", "type": "radio", "sensitive": True}]
         browser = ManagedBrowser()
         browser._page = FakePage(
-            [page(unresolved=sensitive), page(unresolved=sensitive), page(unresolved=sensitive)]
+            [
+                page(unresolved=sensitive),
+                page(unresolved=sensitive),
+                page(unresolved=sensitive),
+                page(unresolved=sensitive),
+            ]
         )
         browser._state.update({"running": True, "phase": "watching"})
 
@@ -134,7 +145,7 @@ class ManagedBrowserTests(unittest.TestCase):
     ) -> None:
         unchanged = page(value="Already complete", continue_button=True)
         browser = ManagedBrowser()
-        fake = FakePage([unchanged, unchanged, unchanged, unchanged])
+        fake = FakePage([unchanged, unchanged, unchanged, unchanged, unchanged])
         browser._page = fake
         browser._state.update({"running": True, "phase": "watching"})
 
@@ -143,6 +154,44 @@ class ManagedBrowserTests(unittest.TestCase):
         self.assertEqual(1, fake.clicks)
         self.assertEqual("needs_input", browser.status()["phase"])
         self.assertIn("did not advance", browser.status()["message"])
+
+    @patch(
+        "job_agent.managed_browser.document_file",
+        return_value={
+            "filename": "resume.pdf",
+            "mimeType": "application/pdf",
+            "data": b"resume",
+        },
+    )
+    def test_hidden_greenhouse_resume_is_distinguished_from_cover_letter(
+        self,
+        _document,
+    ) -> None:
+        browser = ManagedBrowser()
+        fake = FakePage([])
+        browser._page = fake
+        raw = {
+            "application": {
+                "fileFields": [
+                    {
+                        "fieldId": "clover-file-0",
+                        "label": "Attach resume",
+                        "hasFile": False,
+                    },
+                    {
+                        "fieldId": "clover-file-1",
+                        "label": "Attach cover_letter",
+                        "hasFile": False,
+                    },
+                ]
+            }
+        }
+
+        uploaded = browser._upload_resume(raw)
+
+        self.assertTrue(uploaded)
+        self.assertIn("clover-file-0", fake.selected)
+        self.assertEqual("resume.pdf", fake.upload["name"])
 
 
 if __name__ == "__main__":

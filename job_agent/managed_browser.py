@@ -105,13 +105,15 @@ CAPTURE_SCRIPT = r"""
     });
   });
   const fileFields = [...document.querySelectorAll("input[type='file']")]
-    .filter((el) => visible(el) && !el.disabled)
+    .filter((el) => !el.disabled)
     .slice(0, 20)
     .map((el, index) => {
       const fieldId = `clover-file-${index}`;
       el.dataset.cloverFileId = fieldId;
       return {
-        fieldId, label: labelFor(el) || "File upload", accept: el.accept || "",
+        fieldId,
+        label: clean(`${labelFor(el)} ${el.id || ""} ${el.name || ""}`) || "File upload",
+        accept: el.accept || "",
         hasFile: Boolean(el.files?.length), filename: String(el.files?.[0]?.name || ""),
       };
     });
@@ -367,13 +369,29 @@ class ManagedBrowser:
         signature = self._signature(raw)
         if signature == self._last_signature and not force:
             return
+        self._page.wait_for_timeout(400)
+        settled = self._capture()
+        if self._signature(settled) != signature:
+            self._last_signature = ""
+            self._set(
+                phase="watching",
+                message="Waiting for the application form to finish loading.",
+                url=settled["url"],
+            )
+            return
+        raw = settled
+        signature = self._signature(raw)
         self._last_signature = signature
         self._set(phase="preparing", message="Juno is filling answers she can verify.", url=raw["url"])
         started = time.monotonic()
+        uploaded = self._upload_resume(raw)
+        if uploaded:
+            self._page.wait_for_timeout(900)
+            raw = self._capture()
         quick = quick_answers(raw.get("fields") or [], DEFAULT_PERSON_ID)
+        quick_result = {"filled": 0, "skipped": 0}
         if quick:
-            self._page.evaluate(FILL_SCRIPT, quick)
-        self._upload_resume(raw)
+            quick_result = self._page.evaluate(FILL_SCRIPT, quick)
         remaining = self._capture()
         suggestions = suggest_fields(
             remaining,
@@ -388,14 +406,25 @@ class ManagedBrowser:
         ]
         review = [item for item in suggestions if item not in safe]
         remember_answers(remaining.get("fields") or [], safe, DEFAULT_PERSON_ID)
+        juno_result = {"filled": 0, "skipped": 0}
         if safe:
-            self._page.evaluate(FILL_SCRIPT, safe)
+            juno_result = self._page.evaluate(FILL_SCRIPT, safe)
+        self._page.wait_for_timeout(250)
         current = self._capture()
+        if current["application"]["unresolvedRequired"] and quick:
+            retry_quick = quick_answers(current.get("fields") or [], DEFAULT_PERSON_ID)
+            if retry_quick:
+                retry_result = self._page.evaluate(FILL_SCRIPT, retry_quick)
+                quick_result["filled"] += int(retry_result.get("filled") or 0)
+                quick_result["skipped"] += int(retry_result.get("skipped") or 0)
+                self._page.wait_for_timeout(250)
+                current = self._capture()
         self._last_signature = self._signature(current)
         timing = {
             "elapsedMs": int((time.monotonic() - started) * 1000),
-            "quickFilled": len(quick),
-            "junoFilled": len(safe),
+            "quickFilled": int(quick_result.get("filled") or 0),
+            "junoFilled": int(juno_result.get("filled") or 0),
+            "resumeUploaded": uploaded,
         }
         unresolved = current["application"]["unresolvedRequired"]
         if unresolved:
@@ -461,7 +490,7 @@ class ManagedBrowser:
             timing=timing,
         )
 
-    def _upload_resume(self, raw: dict[str, Any]) -> None:
+    def _upload_resume(self, raw: dict[str, Any]) -> bool:
         candidates = [
             item
             for item in raw.get("application", {}).get("fileFields") or []
@@ -472,10 +501,10 @@ class ManagedBrowser:
             candidates[0] if len(candidates) == 1 else None,
         )
         if preferred is None:
-            return
+            return False
         stored = document_file(kind="resume", person_id=DEFAULT_PERSON_ID)
         if stored is None:
-            return
+            return False
         self._page.locator(
             f"[data-clover-file-id={json.dumps(preferred['fieldId'])}]"
         ).set_input_files(
@@ -485,6 +514,7 @@ class ManagedBrowser:
                 "buffer": stored["data"],
             }
         )
+        return True
 
     def request_submission(self) -> dict[str, Any]:
         return self._call(self._request_submission)
