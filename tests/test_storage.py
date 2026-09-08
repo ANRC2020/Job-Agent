@@ -50,11 +50,13 @@ class StorageTests(unittest.TestCase):
                 "006_conversation_compaction.sql",
                 "007_opportunity_enrichment.sql",
                 "008_job_external_identity.sql",
+                "009_remove_extension_auth.sql",
+                "010_application_answer_cache.sql",
             ],
             first["migrationsApplied"],
         )
         self.assertEqual([], second["migrationsApplied"])
-        self.assertEqual(8, database_status()["schemaVersion"])
+        self.assertEqual(10, database_status()["schemaVersion"])
 
     def test_all_three_domains_are_installed(self) -> None:
         initialize_database()
@@ -81,6 +83,8 @@ class StorageTests(unittest.TestCase):
                 "conversation_summary",
             }.issubset(tables)
         )
+        self.assertNotIn("extension_pairing_code", tables)
+        self.assertNotIn("extension_token", tables)
 
     def test_conversations_and_model_runs_are_persisted_and_searchable(self) -> None:
         initialize_database()
@@ -223,6 +227,8 @@ class StorageTests(unittest.TestCase):
                 "006_conversation_compaction.sql",
                 "007_opportunity_enrichment.sql",
                 "008_job_external_identity.sql",
+                "009_remove_extension_auth.sql",
+                "010_application_answer_cache.sql",
             ],
             result["migrationsApplied"],
         )

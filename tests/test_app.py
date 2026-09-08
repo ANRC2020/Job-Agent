@@ -9,9 +9,62 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest.mock import patch
 
-from job_agent.app import _bind_server, _model_messages
+from job_agent.app import _bind_server, _model_messages, _supervise_runtime
 from job_agent.autonomy import list_pending_actions, queue_approval
 from job_agent.storage import initialize_database
+
+
+class RuntimeSupervisorTests(unittest.TestCase):
+    @patch("job_agent.app.start_runtime", return_value="repaired-session")
+    @patch(
+        "job_agent.app.runtime_ready",
+        side_effect=[True, False],
+    )
+    @patch("job_agent.app.ensure_model")
+    def test_server_drop_is_repaired_while_clover_stays_open(
+        self, ensure, _status, start
+    ) -> None:
+        stop = threading.Event()
+        holder: dict = {"session": None}
+        start.side_effect = lambda: (stop.set(), "repaired-session")[1]
+
+        _supervise_runtime(stop, holder, health_interval=0, retry_base=0)
+
+        ensure.assert_called_once()
+        start.assert_called_once()
+        self.assertEqual("repaired-session", holder["session"])
+
+    @patch("job_agent.app.runtime_ready", return_value=False)
+    @patch("job_agent.app.ensure_model")
+    def test_transient_start_failure_retries_without_repeating_setup(
+        self, ensure, _status
+    ) -> None:
+        stop = threading.Event()
+        holder: dict = {"session": None}
+        logs: list[str] = []
+        attempts = 0
+
+        def start() -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("temporary failure")
+            stop.set()
+            return "healthy-session"
+
+        with patch("job_agent.app.start_runtime", side_effect=start):
+            _supervise_runtime(
+                stop,
+                holder,
+                health_interval=0,
+                retry_base=0,
+                log=logs.append,
+            )
+
+        ensure.assert_called_once()
+        self.assertEqual(2, attempts)
+        self.assertEqual("healthy-session", holder["session"])
+        self.assertTrue(any("retrying" in message for message in logs))
 
 
 class AppApiTests(unittest.TestCase):
@@ -140,63 +193,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual("verified", detail["verificationStatus"])
         self.assertEqual(["Python"], detail["requirements"])
 
-    def test_extension_routes_require_a_paired_bearer_token(self) -> None:
-        pairing = json.loads(self.post("/api/settings/extension/pairing-code", {}))
-        paired = json.loads(self.post("/api/extension/pair", {"code": pairing["code"]}))
-        page = {"url": "https://jobs.example.test/42", "title": "Writer", "fields": []}
-
-        unauthenticated = Request(
-            self.base + "/api/extension/resolve-page",
-            data=json.dumps({"page": page}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with self.assertRaises(HTTPError) as denied:
-            urlopen(unauthenticated, timeout=5)
-        self.assertEqual(401, denied.exception.code)
-
-        authenticated = Request(
-            self.base + "/api/extension/resolve-page",
-            data=json.dumps({"page": page}).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {paired['token']}",
-            },
-            method="POST",
-        )
-        with urlopen(authenticated, timeout=5) as response:
-            result = json.loads(response.read())
-        self.assertFalse(result["matched"])
-
-        gated = Request(
-            self.base + "/api/extension/analyze",
-            data=json.dumps({"page": page}).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {paired['token']}",
-            },
-            method="POST",
-        )
-        with patch(
-            "job_agent.app.readiness",
-            return_value={"ready": False, "state": "installing"},
-        ):
-            with self.assertRaises(HTTPError) as unavailable:
-                urlopen(gated, timeout=5)
-        self.assertEqual(503, unavailable.exception.code)
-
-    def test_extension_payload_limit_is_enforced_before_json_parsing(self) -> None:
-        request = Request(
-            self.base + "/api/extension/pair",
-            data=b"x" * 512_001,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with self.assertRaises(HTTPError) as rejected:
-            urlopen(request, timeout=5)
-        self.assertEqual(413, rejected.exception.code)
-
-    def test_extension_origin_is_confined_to_extension_routes(self) -> None:
+    def test_extension_origins_cannot_call_clover(self) -> None:
         generic = Request(
             self.base + "/api/settings",
             headers={"Origin": "chrome-extension://test-extension"},
@@ -205,15 +202,36 @@ class AppApiTests(unittest.TestCase):
             urlopen(generic, timeout=5)
         self.assertEqual(403, rejected.exception.code)
 
-        browser_page = Request(
-            self.base + "/api/extension/status",
-            headers={"Origin": "https://malicious.example"},
-        )
-        with self.assertRaises(HTTPError) as rejected_page:
-            urlopen(browser_page, timeout=5)
-        self.assertEqual(403, rejected_page.exception.code)
+    @patch("job_agent.app.managed_browser")
+    @patch("job_agent.app.readiness", return_value={"ready": True})
+    def test_guided_application_starts_in_managed_browser(
+        self,
+        _readiness,
+        browser,
+    ) -> None:
+        browser.start.return_value = {
+            "running": True,
+            "phase": "watching",
+            "opportunityId": "opportunity-1",
+        }
 
-    def test_browser_submission_cannot_be_approved_away_from_live_page(self) -> None:
+        result = json.loads(
+            self.post(
+                "/api/browser/start",
+                {
+                    "url": "https://jobs.example.test/apply",
+                    "opportunityId": "opportunity-1",
+                },
+            )
+        )
+
+        self.assertEqual("watching", result["phase"])
+        browser.start.assert_called_once_with(
+            "https://jobs.example.test/apply",
+            "opportunity-1",
+        )
+
+    def test_managed_browser_submission_requires_live_page_confirmation(self) -> None:
         action_id = queue_approval(
             action_name="submit_application",
             arguments={"url": "https://jobs.example.test/apply"},

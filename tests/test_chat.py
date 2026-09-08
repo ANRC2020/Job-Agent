@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 import unittest
 from urllib.error import HTTPError
 from unittest.mock import MagicMock, patch
@@ -8,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from job_agent.chat import (
     EMPTY_RESPONSE_FALLBACK,
     MAX_OUTPUT_TOKENS,
+    TOOL_CALL_RETRY_OUTPUT_TOKENS,
     _job_search_requested,
     _payload,
     _post,
@@ -174,6 +176,40 @@ class EmptyResponseTests(unittest.TestCase):
                     )
 
         self.assertEqual(2, request.call_count)
+
+    def test_truncated_tool_call_is_retried_with_a_larger_output_budget(self) -> None:
+        truncated = HTTPError(
+            "http://localhost/v1/responses",
+            500,
+            "Internal Server Error",
+            {},
+            BytesIO(
+                b'{"error":{"message":"Failed to parse tool call: Unexpected end of content."}}'
+            ),
+        )
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"output":[]}'
+        with patch("job_agent.chat.wait_for_server", return_value=True):
+            with patch(
+                "job_agent.chat.urlopen", side_effect=[truncated, response]
+            ) as request:
+                result = _post(
+                    {
+                        "model": "test",
+                        "max_output_tokens": MAX_OUTPUT_TOKENS,
+                        "temperature": 0.4,
+                    },
+                    timeout=5,
+                )
+
+        retry_request = request.call_args_list[1].args[0]
+        retry_payload = json.loads(retry_request.data)
+        self.assertEqual({"output": []}, result)
+        self.assertEqual(
+            TOOL_CALL_RETRY_OUTPUT_TOKENS,
+            retry_payload["max_output_tokens"],
+        )
+        self.assertEqual(0.2, retry_payload["temperature"])
 
     def test_reasoning_only_generation_is_retried_for_a_visible_answer(self) -> None:
         first = {"output": [{"type": "reasoning", "content": "private reasoning"}]}

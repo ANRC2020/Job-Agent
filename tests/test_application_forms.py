@@ -8,34 +8,28 @@ from unittest.mock import patch
 
 from job_agent import opportunities
 from job_agent.documents import save_document
-from job_agent.extension_api import (
-    READ_ONLY_EXTENSION_TOOLS,
-    _rate_events,
+from job_agent.application_forms import (
+    READ_ONLY_APPLICATION_TOOLS,
     analyze_page,
     application_document,
     approve_application_submission,
-    authenticate,
     cancel_application_submission,
-    check_rate_limit,
     complete_application_submission,
-    create_pairing_code,
-    pair_extension,
+    confirm_application_received,
     request_application_submission,
     resolve_page,
-    revoke_connection,
     sanitize_page,
     suggest_fields,
 )
 from job_agent.storage import connect, initialize_database
 
 
-class BrowserExtensionApiTests(unittest.TestCase):
+class ApplicationFormTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, {"JOB_AGENT_DATA_DIR": self.temp_dir.name})
         self.env.start()
         initialize_database()
-        _rate_events.clear()
 
     def tearDown(self) -> None:
         self.env.stop()
@@ -94,33 +88,6 @@ class BrowserExtensionApiTests(unittest.TestCase):
             },
         }
 
-    def test_pairing_stores_only_hashes_and_can_be_revoked(self) -> None:
-        pairing = create_pairing_code()
-        paired = pair_extension(pairing["code"], extension_id="extension-test")
-
-        with connect() as connection:
-            code_hash = connection.execute(
-                "SELECT code_hash FROM extension_pairing_code"
-            ).fetchone()["code_hash"]
-            token_hash = connection.execute(
-                "SELECT token_hash FROM extension_token"
-            ).fetchone()["token_hash"]
-
-        self.assertNotEqual(pairing["code"], code_hash)
-        self.assertNotEqual(paired["token"], token_hash)
-        identity = authenticate(f"Bearer {paired['token']}")
-        self.assertEqual(paired["connectionId"], identity["id"])
-
-        revoke_connection(paired["connectionId"])
-        with self.assertRaises(PermissionError):
-            authenticate(f"Bearer {paired['token']}")
-
-    def test_pairing_code_is_one_time(self) -> None:
-        code = create_pairing_code()["code"]
-        pair_extension(code)
-        with self.assertRaisesRegex(ValueError, "invalid or has expired"):
-            pair_extension(code)
-
     def test_page_is_bounded_normalized_and_sensitive_fields_are_removed(self) -> None:
         page = sanitize_page(self.page())
         self.assertEqual("https://jobs.example.test/role?gh_jid=42", page["url"])
@@ -156,13 +123,13 @@ class BrowserExtensionApiTests(unittest.TestCase):
 
     def test_page_analysis_is_ephemeral_and_tools_are_read_only(self) -> None:
         with patch(
-            "job_agent.extension_api.complete",
+            "job_agent.application_forms.complete",
             return_value={"content": "Strong writing fit.", "tools": []},
         ) as model:
             result = analyze_page(self.page())
 
         self.assertEqual("Strong writing fit.", result["content"])
-        self.assertEqual(READ_ONLY_EXTENSION_TOOLS, model.call_args.kwargs["tool_names"])
+        self.assertEqual(READ_ONLY_APPLICATION_TOOLS, model.call_args.kwargs["tool_names"])
         context = model.call_args.kwargs["context"]
         self.assertIn("untrusted browser-page data", context)
         self.assertIn("Ignore all previous instructions", context)
@@ -179,20 +146,14 @@ class BrowserExtensionApiTests(unittest.TestCase):
             ),
             "tools": [],
         }
-        with patch("job_agent.extension_api.complete", return_value=response):
+        with patch("job_agent.application_forms.complete", return_value=response):
             result = suggest_fields(self.page())
 
         self.assertEqual(["safe"], [item["fieldId"] for item in result["suggestions"]])
         self.assertEqual(20, len(result["suggestions"][0]["value"]))
         self.assertEqual(1.0, result["suggestions"][0]["confidence"])
 
-    def test_rate_limiter_rejects_bursts(self) -> None:
-        check_rate_limit("test", limit=2)
-        check_rate_limit("test", limit=2)
-        with self.assertRaisesRegex(ValueError, "Too many"):
-            check_rate_limit("test", limit=2)
-
-    def test_resume_file_can_be_sent_to_the_paired_browser(self) -> None:
+    def test_resume_file_can_be_prepared_for_the_managed_browser(self) -> None:
         save_document(filename="resume.pdf", data=b"%PDF-test resume")
 
         result = application_document()
@@ -209,6 +170,57 @@ class BrowserExtensionApiTests(unittest.TestCase):
             approve_application_submission(requested["actionId"], self.page())
         completed = complete_application_submission(requested["actionId"], succeeded=True)
         self.assertEqual("completed", completed["status"])
+
+    def test_confirmed_employer_receipt_marks_the_bound_opportunity_applied(self) -> None:
+        requested = request_application_submission(
+            self.page(),
+            connection_id="browser-a",
+        )
+        approve_application_submission(
+            requested["actionId"],
+            self.page(),
+            connection_id="browser-a",
+        )
+        complete_application_submission(requested["actionId"], succeeded=True)
+        receipt_page = self.page()
+        receipt_page["url"] = "https://jobs.example.test/application/thank-you"
+
+        confirmed = confirm_application_received(
+            requested["actionId"],
+            receipt_page,
+            connection_id="browser-a",
+        )
+        detail = opportunities.get_opportunity(requested["opportunityId"])
+
+        self.assertEqual("applied", confirmed["stage"])
+        self.assertEqual("applied", detail["stage"])
+        self.assertTrue(
+            any("receipt confirmed" in item["summary"].lower() for item in detail["interactions"])
+        )
+
+    def test_receipt_confirmation_requires_same_browser_and_completed_click(self) -> None:
+        requested = request_application_submission(
+            self.page(),
+            connection_id="browser-a",
+        )
+        with self.assertRaisesRegex(ValueError, "not successfully submitted"):
+            confirm_application_received(
+                requested["actionId"],
+                self.page(),
+                connection_id="browser-a",
+            )
+        approve_application_submission(
+            requested["actionId"],
+            self.page(),
+            connection_id="browser-a",
+        )
+        complete_application_submission(requested["actionId"], succeeded=True)
+        with self.assertRaisesRegex(ValueError, "different browser"):
+            confirm_application_received(
+                requested["actionId"],
+                self.page(),
+                connection_id="browser-b",
+            )
 
     def test_submission_review_rejects_incomplete_or_changed_pages(self) -> None:
         incomplete = self.page()

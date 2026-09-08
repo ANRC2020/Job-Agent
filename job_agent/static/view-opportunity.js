@@ -40,19 +40,15 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
       talk("Help me find the official application page for this role.");
       return;
     }
-    const link = document.createElement("a");
-    link.href = target;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.click();
+    await api.post("/api/browser/start", { url: target, opportunityId: id });
     if (!["applying", "applied", "interviewing", "offer"].includes(data.stage)) {
       await api.post(`/api/opportunities/${id}/stage`, {
         stage: "applying",
-        reason: "Opened the direct application with Juno",
+        reason: "Started Clover's guided application runner",
       });
       nav.refreshCounts();
     }
-    reload("I opened the direct application. Use the Clover Browser Companion there and I'll prepare each step with you.");
+    reload("I opened the application in Clover's browser. I'll fill verified answers, move through safe steps, and pause whenever I need you.");
   }
 
   // --- header ---------------------------------------------------------
@@ -225,6 +221,92 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
     );
   }
   inner.append(actions);
+
+  const runner = el("div");
+  let runnerPoll = null;
+  inner.append(runner);
+
+  async function refreshRunner() {
+    if (!document.body.contains(page)) return;
+    if (runnerPoll) window.clearTimeout(runnerPoll);
+    try {
+      const state = await api.get("/api/browser/status");
+      clear(runner);
+      if (!state.running || state.opportunityId !== id) return;
+      const runnerActions = el("div", { class: "actions" });
+      const refresh = async (path, payload = {}) => {
+        await api.post(path, payload);
+        refreshRunner();
+      };
+      if (state.phase === "needs_input" || state.phase === "error") {
+        runnerActions.append(
+          act("Check this step again", () => refresh("/api/browser/prepare"), true)
+        );
+      }
+      if (state.phase === "ready_to_submit") {
+        runnerActions.append(
+          act("Review final submission", () => refresh("/api/browser/submission/request"), true)
+        );
+      }
+      const actionId = state.submission?.actionId;
+      if (state.phase === "awaiting_approval" && actionId) {
+        runnerActions.append(
+          act("Submit application now", () => refresh("/api/browser/submission/approve", { actionId }), true),
+          act("Cancel", () => refresh("/api/browser/submission/cancel", { actionId }))
+        );
+      }
+      if (state.phase === "awaiting_receipt" && actionId) {
+        runnerActions.append(
+          act("Confirm employer received it", async () => {
+            await refresh("/api/browser/submission/receipt", { actionId });
+            nav.refreshCounts();
+            reload("Application receipt confirmed. I marked this opportunity as applied.");
+          }, true)
+        );
+      }
+      runnerActions.append(
+        act("Close application browser", () => refresh("/api/browser/close"))
+      );
+      const unresolved = state.unresolved || [];
+      runner.append(
+        el(
+          "div",
+          { class: "card-accent stack stack-3" },
+          el("div", { class: "eyebrow", text: "Application runner" }),
+          el("strong", { text: state.message || "Juno is working on this application." }),
+          state.url ? el("div", { class: "small faint", text: state.url }) : null,
+          state.timing
+            ? el("div", {
+                class: "small faint",
+                text: `${state.timing.quickFilled || 0} filled instantly · ${state.timing.junoFilled || 0} prepared by Juno · ${(state.timing.elapsedMs / 1000).toFixed(1)}s`,
+              })
+            : null,
+          unresolved.length
+            ? el(
+                "div",
+                { class: "stack stack-2" },
+                el("div", { class: "small muted", text: "Waiting for you:" }),
+                unresolved.map((item) =>
+                  el("div", {
+                    class: item.sensitive ? "small warning" : "small",
+                    text: `— ${item.label}`,
+                  })
+                )
+              )
+            : null,
+          runnerActions
+        )
+      );
+      if (!["completed", "closed"].includes(state.phase)) {
+        runnerPoll = window.setTimeout(refreshRunner, 1500);
+      }
+    } catch (problem) {
+      clear(runner);
+      runner.append(el("div", { class: "small warning", text: problem.message }));
+    }
+  }
+
+  refreshRunner();
 
   // --- the record -----------------------------------------------------
 

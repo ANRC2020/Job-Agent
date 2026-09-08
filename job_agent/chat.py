@@ -55,6 +55,7 @@ EMPTY_RESPONSE_FALLBACK = (
 MODEL_REQUEST_TIMEOUT = 60
 MODEL_TURN_TIMEOUT = 90
 MAX_OUTPUT_TOKENS = 640
+TOOL_CALL_RETRY_OUTPUT_TOKENS = 1_600
 
 
 class ModelResponseTimeout(TimeoutError):
@@ -83,18 +84,37 @@ def _post(payload: dict[str, Any], *, timeout: float = MODEL_REQUEST_TIMEOUT) ->
     if not wait_for_server(120):
         raise ConnectionError("Juno's local engine did not finish starting.")
     deadline = time.monotonic() + timeout
+    request_payload = dict(payload)
     for attempt in range(2):
         try:
             with urlopen(
-                _request(payload),
+                _request(request_payload),
                 timeout=max(1, deadline - time.monotonic()),
             ) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            if attempt == 0 and exc.code >= 500 and "model unloaded" in detail.lower():
-                time.sleep(0.5)
-                continue
+            if attempt == 0 and exc.code >= 500:
+                lowered = detail.lower()
+                if "model unloaded" in lowered:
+                    time.sleep(0.5)
+                    continue
+                if (
+                    "failed to parse tool call" in lowered
+                    and "unexpected end of content" in lowered
+                ):
+                    request_payload = {
+                        **request_payload,
+                        "max_output_tokens": max(
+                            int(request_payload.get("max_output_tokens") or 0),
+                            TOOL_CALL_RETRY_OUTPUT_TOKENS,
+                        ),
+                        "temperature": min(
+                            float(request_payload.get("temperature") or 0.4),
+                            0.2,
+                        ),
+                    }
+                    continue
             raise RuntimeError(f"LM Studio rejected Juno's request: {detail[:500]}") from exc
         except TimeoutError as exc:
             raise ModelResponseTimeout(

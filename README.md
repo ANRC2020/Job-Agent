@@ -63,22 +63,21 @@ read-only search layer, then reads supported applicant systems through their off
 feeds. Web pages are treated as untrusted source material and cannot authorize submissions or
 other external actions.
 
-## Browser companion
+## Guided applications
 
-The optional Chromium extension brings Juno into the job page you are viewing. It can assess the
-role, answer page-aware questions, save the opportunity when you ask, fill safe empty application
-fields, and attach your locally stored resume. On the final page it can submit once only after you
-review the live form and give explicit one-time confirmation. Sensitive questions remain manual,
-and Clover asks you to verify the employer's success page.
+Clover opens a dedicated, visible Chrome session for an application—there is no extension to
+install. Juno reads each step, fills high-confidence answers grounded in your resume and confirmed
+profile, attaches your locally stored resume, and navigates unambiguous Next or Continue steps.
+Sensitive, uncertain, and protected-trait questions remain manual. Clover pauses at the final page
+until you review it and give explicit one-time confirmation, then asks you to verify the employer's
+success page.
 
 Each opportunity has an **Apply with Juno** action. Clover opens the verified direct application
 link, moves the role into Applying, and keeps the posting, tailored materials, notes, stage history,
 and role-specific conversation together.
 
-Once published, install the extension from its Chrome Web Store listing, then create a one-time
-pairing code under **Clover → Settings → Browser companion**. During development it can still be
-loaded from the repository's `extension` folder. Site access is requested one site at a time and
-page captures remain temporary by default. See the [browser companion instructions](extension/README.md).
+The application session uses a private browser profile stored with Clover's local data. You can sign
+in to employer sites in that window when needed; Clover does not copy credentials into its database.
 
 ## Local data
 

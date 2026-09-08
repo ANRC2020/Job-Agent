@@ -1,19 +1,15 @@
-"""Secure, ephemeral bridge for the Clover Chromium companion."""
+"""Constrained page understanding and application-submission operations."""
 
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import re
-import secrets
-import threading
-import time
-from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
-from job_agent import opportunities
+from job_agent import events, opportunities
 from job_agent.autonomy import (
     complete_approval,
     queue_approval,
@@ -27,19 +23,15 @@ from job_agent.storage import (
     DEFAULT_PERSON_ID,
     connect,
     ensure_thread,
-    initialize_database,
-    new_id,
     transaction,
     utc_now,
 )
 
-PAIRING_TTL_MINUTES = 10
 SUBMISSION_APPROVAL_TTL_MINUTES = 10
-MAX_EXTENSION_BODY_BYTES = 512_000
 MAX_PAGE_TEXT_CHARS = 30_000
 MAX_FIELDS = 80
 MAX_FIELD_VALUE_CHARS = 4_000
-READ_ONLY_EXTENSION_TOOLS = ("get_opportunity", "read_my_document", "search_memory")
+READ_ONLY_APPLICATION_TOOLS = ("get_opportunity", "read_my_document", "search_memory")
 
 SENSITIVE_FIELD_PATTERN = re.compile(
     r"\b(password|passcode|credit|debit|card number|cvv|cvc|bank|routing|"
@@ -49,167 +41,6 @@ SENSITIVE_FIELD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 BLOCKED_FIELD_TYPES = {"password", "hidden", "file", "submit", "reset", "button", "image"}
-
-_rate_lock = threading.Lock()
-_rate_events: dict[str, deque[float]] = defaultdict(deque)
-
-
-def _hash_secret(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def check_rate_limit(key: str, *, limit: int = 20, window_seconds: int = 60) -> None:
-    now = time.monotonic()
-    with _rate_lock:
-        events = _rate_events[key]
-        while events and events[0] <= now - window_seconds:
-            events.popleft()
-        if len(events) >= limit:
-            raise ValueError("Too many extension requests. Wait a moment and try again.")
-        events.append(now)
-
-
-def create_pairing_code(person_id: str = DEFAULT_PERSON_ID) -> dict[str, Any]:
-    """Create a short-lived code that Clover shows once in Settings."""
-    initialize_database()
-    code = f"{secrets.randbelow(100_000_000):08d}"
-    now = datetime.now(timezone.utc)
-    expires = now + timedelta(minutes=PAIRING_TTL_MINUTES)
-    with transaction() as connection:
-        connection.execute(
-            """
-            UPDATE extension_pairing_code
-            SET used_at = COALESCE(used_at, ?), updated_at = ?
-            WHERE person_id = ? AND used_at IS NULL
-            """,
-            (now.isoformat(), now.isoformat(), person_id),
-        )
-        connection.execute(
-            """
-            INSERT INTO extension_pairing_code(
-                id, person_id, code_hash, expires_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                new_id(),
-                person_id,
-                _hash_secret(code),
-                expires.isoformat(),
-                now.isoformat(),
-                now.isoformat(),
-            ),
-        )
-    return {"code": code, "expiresAt": expires.isoformat()}
-
-
-def pair_extension(
-    code: str,
-    *,
-    extension_name: str = "Clover Browser Companion",
-    extension_id: str = "",
-    person_id: str = DEFAULT_PERSON_ID,
-) -> dict[str, Any]:
-    check_rate_limit("pair", limit=10, window_seconds=60)
-    clean = re.sub(r"\D", "", code or "")
-    if len(clean) != 8:
-        raise ValueError("Enter the eight-digit code shown in Clover Settings.")
-    now = utc_now()
-    token = secrets.token_urlsafe(32)
-    with transaction() as connection:
-        row = connection.execute(
-            """
-            SELECT id FROM extension_pairing_code
-            WHERE person_id = ? AND code_hash = ?
-              AND used_at IS NULL AND expires_at > ?
-            """,
-            (person_id, _hash_secret(clean), now),
-        ).fetchone()
-        if row is None:
-            raise ValueError("That pairing code is invalid or has expired.")
-        connection.execute(
-            "UPDATE extension_pairing_code SET used_at = ?, updated_at = ? WHERE id = ?",
-            (now, now, row["id"]),
-        )
-        token_id = new_id()
-        connection.execute(
-            """
-            INSERT INTO extension_token(
-                id, person_id, extension_name, extension_id, token_hash,
-                created_at, last_used_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                token_id,
-                person_id,
-                (extension_name or "Clover Browser Companion").strip()[:120],
-                (extension_id or "").strip()[:160] or None,
-                _hash_secret(token),
-                now,
-                now,
-                now,
-            ),
-        )
-    return {"token": token, "connectionId": token_id}
-
-
-def authenticate(authorization: str) -> dict[str, str]:
-    initialize_database()
-    scheme, _, token = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        raise PermissionError("Pair the browser companion with Clover first.")
-    token_hash = _hash_secret(token.strip())
-    now = utc_now()
-    with transaction() as connection:
-        row = connection.execute(
-            """
-            SELECT id, person_id, extension_name
-            FROM extension_token
-            WHERE token_hash = ? AND revoked_at IS NULL
-            """,
-            (token_hash,),
-        ).fetchone()
-        if row is None:
-            raise PermissionError("This browser companion connection is no longer valid.")
-        connection.execute(
-            "UPDATE extension_token SET last_used_at = ?, updated_at = ? WHERE id = ?",
-            (now, now, row["id"]),
-        )
-    check_rate_limit(f"token:{row['id']}", limit=30, window_seconds=60)
-    return {
-        "id": str(row["id"]),
-        "personId": str(row["person_id"]),
-        "name": str(row["extension_name"]),
-    }
-
-
-def list_connections(person_id: str = DEFAULT_PERSON_ID) -> list[dict[str, Any]]:
-    initialize_database()
-    with transaction() as connection:
-        rows = connection.execute(
-            """
-            SELECT id, extension_name, extension_id, created_at, last_used_at
-            FROM extension_token
-            WHERE person_id = ? AND revoked_at IS NULL
-            ORDER BY COALESCE(last_used_at, created_at) DESC
-            """,
-            (person_id,),
-        ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def revoke_connection(connection_id: str, person_id: str = DEFAULT_PERSON_ID) -> None:
-    now = utc_now()
-    with transaction() as connection:
-        cursor = connection.execute(
-            """
-            UPDATE extension_token SET revoked_at = ?, updated_at = ?
-            WHERE id = ? AND person_id = ? AND revoked_at IS NULL
-            """,
-            (now, now, connection_id, person_id),
-        )
-        if cursor.rowcount == 0:
-            raise ValueError("That browser connection is already gone.")
-
 
 def normalize_url(url: str) -> str:
     try:
@@ -393,7 +224,7 @@ def analyze_page(
     result = complete(
         [{"role": "user", "content": task}],
         context=context,
-        tool_names=READ_ONLY_EXTENSION_TOOLS,
+        tool_names=READ_ONLY_APPLICATION_TOOLS,
         opportunity_id=opportunity_id,
     )
     return {
@@ -434,6 +265,7 @@ def suggest_fields(
     *,
     instructions: str = "",
     person_id: str = DEFAULT_PERSON_ID,
+    opportunity_id: str | None = None,
 ) -> dict[str, Any]:
     resolved = resolve_page(raw_page, person_id)
     page = resolved["page"]
@@ -443,7 +275,7 @@ def suggest_fields(
     if not empty_fields:
         return {"suggestions": [], "skipped": "No safe empty fields were found."}
     opportunity = resolved["opportunity"] or {}
-    opportunity_id = str(opportunity.get("id") or "") or None
+    opportunity_id = opportunity_id or str(opportunity.get("id") or "") or None
     field_contract = [
         {
             "fieldId": field["fieldId"],
@@ -473,7 +305,7 @@ def suggest_fields(
     result = complete(
         [{"role": "user", "content": task}],
         context=context,
-        tool_names=READ_ONLY_EXTENSION_TOOLS,
+        tool_names=READ_ONLY_APPLICATION_TOOLS,
         opportunity_id=opportunity_id,
     )
     parsed = _parse_object(result["content"])
@@ -566,6 +398,7 @@ def request_application_submission(
     *,
     person_id: str = DEFAULT_PERSON_ID,
     connection_id: str = "",
+    opportunity_id: str | None = None,
 ) -> dict[str, Any]:
     page = sanitize_page(raw_page)
     application = page["application"]
@@ -577,6 +410,22 @@ def request_application_submission(
     if not submit["available"] or submit["ambiguous"]:
         raise ValueError(
             "Clover could not identify one unambiguous final submission button on this page."
+        )
+    resolved = (
+        opportunities.get_opportunity(opportunity_id, person_id)
+        if opportunity_id
+        else resolve_page(page, person_id)["opportunity"]
+    )
+    if resolved is None:
+        resolved = save_page_opportunity(page, person_id=person_id)
+    opportunity_id = str(resolved["id"])
+    if resolved.get("stage") in {"suggested", "interested"}:
+        events.transition_stage(
+            opportunity_id,
+            "applying",
+            reason="Prepared final application submission",
+            actor="user",
+            person_id=person_id,
         )
     with transaction() as connection:
         connection.execute(
@@ -596,6 +445,7 @@ def request_application_submission(
             "company": page["company"],
             "buttonLabel": submit["label"],
             "connectionId": connection_id,
+            "opportunityId": opportunity_id,
         },
         explanation=(
             f"Submit this application to {page['company'] or page['title'] or 'the employer'} "
@@ -609,6 +459,7 @@ def request_application_submission(
             "This sends the application to the employer. Review the page, then confirm once."
         ),
         "buttonLabel": submit["label"],
+        "opportunityId": opportunity_id,
         "expiresInMinutes": SUBMISSION_APPROVAL_TTL_MINUTES,
     }
 
@@ -681,6 +532,53 @@ def complete_application_submission(
     return {
         "actionId": action_id,
         "status": "completed" if succeeded else "failed",
+    }
+
+
+def confirm_application_received(
+    action_id: str,
+    raw_page: Any,
+    *,
+    person_id: str = DEFAULT_PERSON_ID,
+    connection_id: str = "",
+) -> dict[str, Any]:
+    """Record Applied only after the person confirms the employer success page."""
+    action = _submission_action(action_id, person_id)
+    if action is None or action["action_name"] != "submit_application":
+        raise ValueError("That application submission no longer exists.")
+    if action["status"] != "completed":
+        raise ValueError("That application was not successfully submitted by Clover.")
+    arguments = action["arguments"]
+    if str(arguments.get("connectionId") or "") != connection_id:
+        raise ValueError("That submission belongs to a different browser connection.")
+    opportunity_id = str(arguments.get("opportunityId") or "")
+    detail = opportunities.get_opportunity(opportunity_id, person_id)
+    if detail is None:
+        raise ValueError("The submitted opportunity is no longer available.")
+    page = sanitize_page(raw_page)
+    expected = urlsplit(str(arguments.get("url") or ""))
+    current = urlsplit(page["url"])
+    if expected.scheme != current.scheme or expected.netloc != current.netloc:
+        raise ValueError("Confirm receipt from the employer's application site.")
+    if detail["stage"] not in {"applied", "interviewing", "offer"}:
+        events.transition_stage(
+            opportunity_id,
+            "applied",
+            reason="Employer receipt page confirmed by user",
+            actor="user",
+            person_id=person_id,
+        )
+        events.record_interaction(
+            opportunity_id,
+            f"Application receipt confirmed on {page['url']}",
+            kind="application",
+            person_id=person_id,
+        )
+    return {
+        "actionId": action_id,
+        "opportunityId": opportunity_id,
+        "stage": "applied",
+        "status": "confirmed",
     }
 
 

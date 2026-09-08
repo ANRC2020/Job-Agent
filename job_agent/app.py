@@ -22,30 +22,14 @@ from job_agent.compaction import schedule_compaction
 from job_agent.config import load_config
 from job_agent.context import build_turn_context
 from job_agent.documents import refresh_pdf_extractions, save_document_base64, save_pasted_text
-from job_agent.extension_api import (
-    MAX_EXTENSION_BODY_BYTES,
-    analyze_page,
-    application_document,
-    approve_application_submission,
-    authenticate as authenticate_extension,
-    cancel_application_submission,
-    complete_application_submission,
-    create_pairing_code,
-    list_connections,
-    pair_extension,
-    request_application_submission,
-    resolve_page,
-    revoke_connection,
-    save_page_opportunity,
-    suggest_fields,
-)
 from job_agent.home import home_overview
 from job_agent.learning import learning_detail
+from job_agent.managed_browser import managed_browser
 from job_agent.personalization import personalization_data
 from job_agent.readiness import readiness, technical_status
 from job_agent.reflection import reflection_for_stage
 from job_agent.repo_tools import call_tool
-from job_agent.runtime import start_runtime, stop_runtime, switch_model
+from job_agent.runtime import runtime_ready, start_runtime, stop_runtime, switch_model
 from job_agent.setup import ensure_model, run_setup
 from job_agent.storage import (
     add_message,
@@ -200,17 +184,6 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "This route is not available to that client."}, 403)
             return
         length = int(self.headers.get("Content-Length") or 0)
-        if parsed.path.startswith("/api/extension/") and length > MAX_EXTENSION_BODY_BYTES:
-            # Drain only the bounded prefix the client is already sending so it can
-            # reliably receive the 413 instead of racing a closed socket.
-            remaining = min(length, MAX_EXTENSION_BODY_BYTES + 1)
-            while remaining:
-                chunk = self.rfile.read(min(64 * 1024, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-            self._json({"error": "That page is too large for Clover to inspect safely."}, 413)
-            return
         raw = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw.decode("utf-8") or "{}")
@@ -227,13 +200,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _origin_allowed(self, path: str) -> bool:
         origin = (self.headers.get("Origin") or "").lower()
-        extension_origin = origin.startswith("chrome-extension://")
-        extension_route = path.startswith("/api/extension/")
-        if extension_origin:
-            return extension_route
-        if extension_route and origin.startswith(("http://", "https://")):
-            return False
-        return True
+        return not origin.startswith("chrome-extension://")
 
     def _dispatch(
         self,
@@ -317,7 +284,6 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "personalization": personalization_data(),
                 "pendingActions": list_pending_actions(),
-                "browserConnections": list_connections(),
                 "engine": technical_status(),
             }
         )
@@ -325,24 +291,8 @@ class Handler(BaseHTTPRequestHandler):
     def get_strategy(self, query: dict[str, Any]) -> None:
         self._json(strategy_summary())
 
-    def get_extension_status(self, query: dict[str, Any]) -> None:
-        authorization = self.headers.get("Authorization") or ""
-        paired = False
-        connection = None
-        if authorization:
-            try:
-                connection = authenticate_extension(authorization)
-                paired = True
-            except PermissionError:
-                paired = False
-        self._json(
-            {
-                "connected": True,
-                "paired": paired,
-                "connection": connection,
-                "readiness": readiness(),
-            }
-        )
+    def get_browser_status(self, query: dict[str, Any]) -> None:
+        self._json(managed_browser.status())
 
     # --- writes -----------------------------------------------------------
 
@@ -443,7 +393,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(
                 {
                     "error": (
-                        "Application submission must be confirmed from the browser companion "
+                        "Application submission must be confirmed from Clover's application runner "
                         "while the reviewed page is still open."
                     )
                 },
@@ -470,105 +420,35 @@ class Handler(BaseHTTPRequestHandler):
             200 if succeeded else 500,
         )
 
-    def _extension_identity(self) -> dict[str, str]:
-        return authenticate_extension(self.headers.get("Authorization") or "")
-
-    def post_extension_pair(self, payload: dict[str, Any]) -> None:
-        self._json(
-            pair_extension(
-                str(payload.get("code") or ""),
-                extension_name=str(payload.get("name") or "Clover Browser Companion"),
-                extension_id=str(payload.get("extensionId") or ""),
-            )
-        )
-
-    def post_extension_resolve(self, payload: dict[str, Any]) -> None:
-        identity = self._extension_identity()
-        self._json(resolve_page(payload.get("page"), identity["personId"]))
-
-    def post_extension_analyze(self, payload: dict[str, Any]) -> None:
-        identity = self._extension_identity()
+    def post_browser_start(self, payload: dict[str, Any]) -> None:
         if not self._juno_ready():
             return
         self._json(
-            analyze_page(
-                payload.get("page"),
-                question=str(payload.get("question") or ""),
-                person_id=identity["personId"],
+            managed_browser.start(
+                str(payload.get("url") or ""),
+                str(payload.get("opportunityId") or ""),
             )
         )
 
-    def post_extension_suggest_fields(self, payload: dict[str, Any]) -> None:
-        identity = self._extension_identity()
+    def post_browser_prepare(self, payload: dict[str, Any]) -> None:
         if not self._juno_ready():
             return
-        self._json(
-            suggest_fields(
-                payload.get("page"),
-                instructions=str(payload.get("instructions") or ""),
-                person_id=identity["personId"],
-            )
-        )
+        self._json(managed_browser.prepare())
 
-    def post_extension_save(self, payload: dict[str, Any]) -> None:
-        identity = self._extension_identity()
-        self._json(save_page_opportunity(payload.get("page"), person_id=identity["personId"]))
+    def post_browser_submission_request(self, payload: dict[str, Any]) -> None:
+        self._json(managed_browser.request_submission())
 
-    def get_extension_document(self, query: dict[str, Any]) -> None:
-        identity = self._extension_identity()
-        self._json(
-            application_document(
-                kind=str(query.get("kind") or "resume"),
-                person_id=identity["personId"],
-            )
-        )
+    def post_browser_submission_approve(self, payload: dict[str, Any]) -> None:
+        self._json(managed_browser.submit(str(payload.get("actionId") or "")))
 
-    def post_extension_submission_request(self, payload: dict[str, Any]) -> None:
-        identity = self._extension_identity()
-        self._json(
-            request_application_submission(
-                payload.get("page"),
-                person_id=identity["personId"],
-                connection_id=identity["id"],
-            )
-        )
+    def post_browser_submission_cancel(self, payload: dict[str, Any]) -> None:
+        self._json(managed_browser.cancel_submission(str(payload.get("actionId") or "")))
 
-    def post_extension_submission_approve(self, payload: dict[str, Any]) -> None:
-        identity = self._extension_identity()
-        self._json(
-            approve_application_submission(
-                str(payload.get("actionId") or ""),
-                payload.get("page"),
-                person_id=identity["personId"],
-                connection_id=identity["id"],
-            )
-        )
+    def post_browser_submission_receipt(self, payload: dict[str, Any]) -> None:
+        self._json(managed_browser.confirm_receipt(str(payload.get("actionId") or "")))
 
-    def post_extension_submission_cancel(self, payload: dict[str, Any]) -> None:
-        identity = self._extension_identity()
-        self._json(
-            cancel_application_submission(
-                str(payload.get("actionId") or ""),
-                person_id=identity["personId"],
-            )
-        )
-
-    def post_extension_submission_complete(self, payload: dict[str, Any]) -> None:
-        identity = self._extension_identity()
-        self._json(
-            complete_application_submission(
-                str(payload.get("actionId") or ""),
-                succeeded=bool(payload.get("succeeded")),
-                person_id=identity["personId"],
-            )
-        )
-
-    def post_extension_pairing_code(self, payload: dict[str, Any]) -> None:
-        self._json(create_pairing_code())
-
-    def post_extension_revoke(self, payload: dict[str, Any], connection_id: str = "") -> None:
-        revoke_connection(connection_id)
-        self._json({"ok": True})
+    def post_browser_close(self, payload: dict[str, Any]) -> None:
+        self._json(managed_browser.close())
 
     def post_engine(self, payload: dict[str, Any], action: str = "") -> None:
         logs: list[str] = []
@@ -658,7 +538,10 @@ class Handler(BaseHTTPRequestHandler):
             emit(
                 {
                     "type": "error",
-                    "message": "Juno hit a local model error. Restart her from Settings and try again.",
+                    "message": (
+                        "Juno couldn't complete that response. Clover will keep her local engine "
+                        "running automatically; please try that message once more."
+                    ),
                 }
             )
             emit({"type": "end"})
@@ -714,8 +597,7 @@ class Handler(BaseHTTPRequestHandler):
         ("thread",): "get_thread",
         ("settings",): "get_settings",
         ("strategy",): "get_strategy",
-        ("extension", "status"): "get_extension_status",
-        ("extension", "application-document"): "get_extension_document",
+        ("browser", "status"): "get_browser_status",
     }
 
     POST_ROUTES: dict[tuple[str, ...], str] = {
@@ -731,18 +613,13 @@ class Handler(BaseHTTPRequestHandler):
         ("profile", "facts", ":fact_id", "dismiss"): "post_fact_dismiss",
         ("profile", "observations", ":observation_id", "review"): "post_observation_review",
         ("approvals", ":action_id"): "post_approval",
-        ("extension", "pair"): "post_extension_pair",
-        ("extension", "resolve-page"): "post_extension_resolve",
-        ("extension", "analyze"): "post_extension_analyze",
-        ("extension", "chat"): "post_extension_analyze",
-        ("extension", "suggest-fields"): "post_extension_suggest_fields",
-        ("extension", "save-opportunity"): "post_extension_save",
-        ("extension", "submission", "request"): "post_extension_submission_request",
-        ("extension", "submission", "approve"): "post_extension_submission_approve",
-        ("extension", "submission", "cancel"): "post_extension_submission_cancel",
-        ("extension", "submission", "complete"): "post_extension_submission_complete",
-        ("settings", "extension", "pairing-code"): "post_extension_pairing_code",
-        ("settings", "extension", ":connection_id", "revoke"): "post_extension_revoke",
+        ("browser", "start"): "post_browser_start",
+        ("browser", "prepare"): "post_browser_prepare",
+        ("browser", "submission", "request"): "post_browser_submission_request",
+        ("browser", "submission", "approve"): "post_browser_submission_approve",
+        ("browser", "submission", "cancel"): "post_browser_submission_cancel",
+        ("browser", "submission", "receipt"): "post_browser_submission_receipt",
+        ("browser", "close"): "post_browser_close",
         ("engine", ":action"): "post_engine",
     }
 
@@ -815,6 +692,35 @@ def _show_native_window(url: str) -> bool:
     return True
 
 
+def _supervise_runtime(
+    stop_event: threading.Event,
+    session_holder: dict[str, Any],
+    *,
+    health_interval: float = 15,
+    retry_base: float = 5,
+    log=print,
+) -> None:
+    """Keep Juno's local services healthy while Clover remains open."""
+    prepared = False
+    failures = 0
+    while not stop_event.is_set():
+        try:
+            if not prepared:
+                ensure_model()
+                prepared = True
+            if not runtime_ready():
+                if failures:
+                    log("Repairing Juno's local runtime")
+                session_holder["session"] = start_runtime()
+            failures = 0
+            stop_event.wait(health_interval)
+        except Exception as exc:  # noqa: BLE001
+            failures += 1
+            delay = min(60, retry_base * (2 ** min(failures - 1, 3)))
+            log(f"Could not start LM Studio (retrying in {delay:g}s): {exc}")
+            stop_event.wait(delay)
+
+
 def serve(
     port: int | None = None,
     open_browser: bool = True,
@@ -832,21 +738,14 @@ def serve(
     print(f"Clover is running at {url}", flush=True)
     session_holder: dict = {"session": None}
     boot: threading.Thread | None = None
+    runtime_stop = threading.Event()
 
     def _boot() -> None:
-        try:
-            ensure_model()
-        except Exception as exc:  # noqa: BLE001
-            print(f"Could not prepare Juno's model: {exc}", flush=True)
-            return
-        for attempt in range(1, 4):
-            try:
-                session_holder["session"] = start_runtime()
-                return
-            except Exception as exc:  # noqa: BLE001
-                print(f"Could not start LM Studio (attempt {attempt}/3): {exc}", flush=True)
-                if attempt < 3:
-                    time.sleep(attempt * 5)
+        _supervise_runtime(
+            runtime_stop,
+            session_holder,
+            log=lambda message: print(message, flush=True),
+        )
 
     try:
         if manage_runtime:
@@ -872,8 +771,14 @@ def serve(
             except KeyboardInterrupt:
                 print("\nStopped.", flush=True)
     finally:
+        runtime_stop.set()
         if boot is not None:
-            boot.join(timeout=120)
+            boot.join(timeout=15)
+        if managed_browser.status().get("running"):
+            try:
+                managed_browser.close()
+            except Exception as exc:  # noqa: BLE001
+                print(f"Application browser did not close cleanly: {exc}", flush=True)
         if manage_runtime:
             stop_runtime(session_holder.get("session"), full_shutdown=True)
         httpd.shutdown()

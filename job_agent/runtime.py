@@ -44,8 +44,9 @@ def _model_loaded(model: str) -> bool:
     )
 
 
-def _model_unloaded(model: str) -> bool:
-    return not _model_loaded(model)
+def runtime_ready() -> bool:
+    """Cheap health probe used by Clover's background runtime supervisor."""
+    return server_reachable() and _model_loaded(load_config().model)
 
 
 def start_runtime(log=print) -> RuntimeSession:
@@ -68,47 +69,42 @@ def start_runtime(log=print) -> RuntimeSession:
         session.started_daemon = True
 
     if before["modelLoaded"]:
-        log(
-            f"Reloading {cfg.model} with Clover's {cfg.context_length}-token context"
-        )
-        unloaded = lms("unload", "--all")
-        if unloaded.returncode != 0:
-            raise RuntimeError(
-                f"Juno's model could not be reconfigured: {_output(unloaded) or 'unknown error'}"
-            )
-        if not _wait_for(lambda: _model_unloaded(cfg.model), 30):
-            raise RuntimeError("Juno's old model instance did not finish unloading.")
-        before["modelLoaded"] = False
-
-    log(f"Loading {cfg.model}")
-    loaded = lms(
-        "load",
-        cfg.model,
-        "-c",
-        str(cfg.context_length),
-        "--identifier",
-        MODEL_INSTANCE_ID,
-    )
-    if loaded.returncode != 0:
+        log(f"{cfg.model} is already loaded; keeping the existing model instance")
+    else:
+        log(f"Loading {cfg.model}")
         loaded = lms(
             "load",
             cfg.model,
-            f"--context-length={cfg.context_length}",
+            "-c",
+            str(cfg.context_length),
             "--identifier",
             MODEL_INSTANCE_ID,
+            "-y",
         )
-    log(_output(loaded) or "model loaded")
-    if loaded.returncode != 0:
-        raise RuntimeError(f"Juno's model could not load: {_output(loaded) or 'unknown error'}")
-    if not _wait_for(lambda: _model_loaded(MODEL_INSTANCE_ID), 180):
-        raise RuntimeError("Juno's model did not finish loading.")
+        if loaded.returncode != 0:
+            loaded = lms(
+                "load",
+                cfg.model,
+                f"--context-length={cfg.context_length}",
+                "--identifier",
+                MODEL_INSTANCE_ID,
+                "--yes",
+            )
+        log(_output(loaded) or "model loaded")
+        if loaded.returncode != 0:
+            raise RuntimeError(f"Juno's model could not load: {_output(loaded) or 'unknown error'}")
+        if not _wait_for(lambda: _model_loaded(MODEL_INSTANCE_ID), 180):
+            raise RuntimeError("Juno's model did not finish loading.")
+        session.loaded_model = True
+
     actual_context = loaded_context_length(MODEL_INSTANCE_ID)
     if actual_context not in (None, cfg.context_length):
-        raise RuntimeError(
-            f"Juno loaded with a {actual_context}-token context instead of "
-            f"{cfg.context_length}."
+        note = (
+            f"LM Studio loaded a {actual_context}-token context instead of Clover's requested "
+            f"{cfg.context_length}. Continuing because current MLX runtimes may auto-fit context."
         )
-    session.loaded_model = True
+        session.notes.append(note)
+        log(note)
 
     if server_reachable():
         log("LM Studio server already running")

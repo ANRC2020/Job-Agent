@@ -16,7 +16,6 @@ export function openSettings() {
   document.body.append(overlay);
 
   const log = el("pre", { class: "log", style: "display: none" });
-  let pairingCode = null;
 
   async function engine(action, model) {
     log.style.display = "block";
@@ -143,60 +142,6 @@ export function openSettings() {
         )
       );
     }
-
-    body.append(
-      el(
-        "div",
-        { class: "stack stack-3" },
-        el("div", { class: "eyebrow", text: "Browser companion" }),
-        el("div", {
-          class: "small muted",
-          text: "Pair the Chromium extension to ask Juno about the page you're viewing. Page captures stay temporary unless you choose Save.",
-        }),
-        pairingCode
-          ? el(
-              "div",
-              { class: "card-quiet stack stack-2" },
-              el("div", { class: "small muted", text: "Enter this one-time code in the extension within 10 minutes:" }),
-              el("strong", { text: pairingCode.code, style: "font-size: 24px; letter-spacing: .18em" })
-            )
-          : null,
-        el("button", {
-          class: "btn",
-          type: "button",
-          text: pairingCode ? "Create a new code" : "Pair a browser",
-          onClick: async () => {
-            pairingCode = await api.post("/api/settings/extension/pairing-code", {});
-            draw();
-          },
-        }),
-        ...(data.browserConnections || []).map((connection) =>
-          el(
-            "div",
-            { class: "understanding-item row" },
-            el(
-              "div",
-              { class: "stack", style: "gap: 2px" },
-              el("div", { text: connection.extension_name || "Clover Browser Companion" }),
-              el("div", {
-                class: "small faint",
-                text: `Last used ${connection.last_used_at ? new Date(connection.last_used_at).toLocaleString() : "never"}`,
-              })
-            ),
-            el("div", { class: "spacer" }),
-            el("button", {
-              class: "btn btn-quiet",
-              type: "button",
-              text: "Revoke",
-              onClick: async () => {
-                await api.post(`/api/settings/extension/${connection.id}/revoke`, {});
-                draw();
-              },
-            })
-          )
-        )
-      )
-    );
 
     // Where the data lives
     body.append(

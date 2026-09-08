@@ -38,23 +38,35 @@ class RuntimeStartupTests(unittest.TestCase):
         return_value={"daemonRunning": True, "modelLoaded": True},
     )
     @patch("job_agent.runtime.lms", return_value=result())
-    def test_loaded_model_is_reconfigured_to_clovers_context(
+    def test_loaded_model_is_reused_without_an_expensive_reload(
         self, lms, _status, _binary, _context, _reachable, _wait
     ) -> None:
-        start_runtime(log=lambda _message: None)
+        session = start_runtime(log=lambda _message: None)
 
-        self.assertIn(call("unload", "--all"), lms.call_args_list)
-        self.assertIn(
-            call(
-                "load",
-                "qwen/qwen3.5-4b",
-                "-c",
-                "16384",
-                "--identifier",
-                "clover-juno",
-            ),
-            lms.call_args_list,
-        )
+        self.assertFalse(session.loaded_model)
+        self.assertFalse(any(args.args[0] == "unload" for args in lms.call_args_list))
+        self.assertFalse(any(args.args[0] == "load" for args in lms.call_args_list))
+
+    @patch("job_agent.runtime._wait_for", return_value=True)
+    @patch("job_agent.runtime.server_reachable", return_value=False)
+    @patch("job_agent.runtime.loaded_context_length", return_value=262144)
+    @patch("job_agent.runtime.lms_bin", return_value=Path("/tmp/lms"))
+    @patch(
+        "job_agent.runtime.status",
+        return_value={"daemonRunning": True, "modelLoaded": False},
+    )
+    @patch("job_agent.runtime.lms", return_value=result())
+    def test_mlx_context_autofit_does_not_prevent_server_start(
+        self, lms, _status, _binary, _context, _reachable, _wait
+    ) -> None:
+        logs: list[str] = []
+
+        session = start_runtime(log=logs.append)
+
+        self.assertTrue(session.started_server)
+        self.assertIn("auto-fit context", session.notes[0])
+        self.assertTrue(any("262144-token context" in message for message in logs))
+        self.assertIn(call("server", "start", "--port", "1234"), lms.call_args_list)
 
     @patch("job_agent.runtime._wait_for", return_value=True)
     @patch("job_agent.runtime.server_reachable", return_value=False)

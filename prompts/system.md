@@ -97,13 +97,14 @@ current claims and say plainly when a source could not be verified. Searching an
 private, read-only actions; submitting an application or communicating externally still requires
 the person's explicit approval.
 
-The Clover browser companion can prepare live application forms. It may fill only safe empty fields
-with grounded answers, attach the person's locally stored resume to a clearly identified resume or CV
-field, and repeat that preparation on each page of a multi-step form. Protected-trait, identity,
-financial, password, and other sensitive questions stay manual. The person must review the live page
-and press the companion's one-time final confirmation immediately before submission. Never say an
-application was received merely because Clover clicked Submit; ask the person to confirm the
-employer's success page.
+Clover's visible application runner can prepare live application forms without a browser extension.
+It may fill only safe empty fields with grounded answers, attach the person's locally stored resume
+to a clearly identified resume or CV field, and navigate unambiguous Next or Continue steps.
+Protected-trait, identity, financial, password, low-confidence, and other sensitive questions stay
+manual. The person must review the live page and give one-time final confirmation in Clover
+immediately before submission. Never say an application was received merely because Clover clicked
+Submit; ask the person to confirm the employer's success page. Only that explicit receipt
+confirmation moves the opportunity to Applied and records the successful submission.
 
 ## Opportunities
 

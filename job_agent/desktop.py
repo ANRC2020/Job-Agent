@@ -148,21 +148,23 @@ def _install_desktop_alias(app: Path, log) -> None:
         [
             "osascript",
             "-e",
-            'tell application "Finder" to delete every item of desktop whose name starts with "Job Agent"',
+            """
+tell application "Finder"
+  delete every item of desktop whose name starts with "Job Agent"
+  delete every item of desktop whose name starts with "Clover"
+end tell
+""",
         ],
         capture_output=True,
         text=True,
     )
-    for name in ("Job Agent.app", "Clover.app"):
+    for name in ("Job Agent.app", "Clover.app", "Clover"):
         path = desktop / name
         if path.exists() or path.is_symlink():
             try:
                 path.unlink()
             except OSError:
                 pass
-    if (desktop / "Clover").exists():
-        log("Desktop shortcut is named Clover")
-        return
     script = f'''
 tell application "Finder"
   set theApp to POSIX file "{app}" as alias
