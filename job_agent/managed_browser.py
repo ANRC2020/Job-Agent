@@ -25,12 +25,9 @@ from job_agent.application_forms import (
     record_application_sent,
     request_application_submission,
     sanitize_page,
-    suggest_fields,
 )
 from job_agent.application_answers import (
-    cached_answers,
     quick_answers,
-    remember_answers,
     remember_user_answers,
 )
 from job_agent.reflection import reflection_for_stage
@@ -196,7 +193,6 @@ CAPTURE_SCRIPT = r"""
     const fieldset = el.closest("fieldset");
     const label = clean(fieldset?.querySelector("legend")?.textContent) ||
       labelFor(el) || "Optional question";
-    if (!sensitive(el, label)) return;
     const key = type === "radio" && el.name ? `radio:${el.name}` : `control:${index}`;
     if (optionalKeys.has(key)) return;
     optionalKeys.add(key);
@@ -216,7 +212,7 @@ CAPTURE_SCRIPT = r"""
         : [];
     optionalQuestions.push({
       fieldId, label, type, options,
-      sensitive: true, optional: true,
+      sensitive: sensitive(el, label), optional: true,
     });
   });
   const buttons = [...document.querySelectorAll("button, input[type='submit'], input[type='button'], a[role='button']")]
@@ -504,6 +500,11 @@ class ManagedBrowser:
             for item in [
                 *(current.get("application", {}).get("unresolvedRequired") or []),
                 *(current.get("application", {}).get("optionalQuestions") or []),
+                *[
+                    item
+                    for item in current.get("fields") or []
+                    if not str(item.get("currentValue") or "").strip()
+                ],
             ]
             if item.get("fieldId")
             and str(item.get("label") or "") not in self._skipped_optional_questions
@@ -770,31 +771,9 @@ class ManagedBrowser:
         quick_result = {"filled": 0, "skipped": 0}
         if quick:
             quick_result = self._fill_suggestions(quick, raw.get("fields") or [])
-        remaining = self._capture()
-        model_warning = ""
-        try:
-            suggestions = suggest_fields(
-                remaining,
-                person_id=DEFAULT_PERSON_ID,
-                opportunity_id=self._opportunity_id or None,
-            ).get("suggestions") or []
-        except ValueError as exc:
-            suggestions = []
-            model_warning = str(exc)
-        safe = [
-            item
-            for item in suggestions
-            if float(item.get("confidence") or 0) >= 0.7
-            and item.get("source") in {"resume", "memory", "opportunity", "inferred"}
-        ]
-        review = [item for item in suggestions if item not in safe]
-        remember_answers(remaining.get("fields") or [], safe, DEFAULT_PERSON_ID)
-        juno_result = {"filled": 0, "skipped": 0}
-        if safe:
-            juno_result = self._fill_suggestions(safe, remaining.get("fields") or [])
         self._page.wait_for_timeout(250)
         current = self._capture()
-        if current["application"]["unresolvedRequired"] and quick:
+        if current.get("fields"):
             retry_quick = quick_answers(current.get("fields") or [], DEFAULT_PERSON_ID)
             if retry_quick:
                 retry_result = self._fill_suggestions(
@@ -805,48 +784,49 @@ class ManagedBrowser:
                 quick_result["skipped"] += int(retry_result.get("skipped") or 0)
                 self._page.wait_for_timeout(250)
                 current = self._capture()
-        question_fields = [
-            *current["application"]["unresolvedRequired"],
-            *(current["application"].get("optionalQuestions") or []),
-        ]
-        remembered = cached_answers(question_fields, DEFAULT_PERSON_ID)
-        if remembered:
-            remembered_result = self._fill_suggestions(remembered, question_fields)
-            quick_result["filled"] += int(remembered_result.get("filled") or 0)
-            quick_result["skipped"] += int(remembered_result.get("skipped") or 0)
-            self._page.wait_for_timeout(250)
-            current = self._capture()
         self._last_signature = self._signature(current)
         timing = {
             "elapsedMs": int((time.monotonic() - started) * 1000),
             "quickFilled": int(quick_result.get("filled") or 0),
-            "junoFilled": int(juno_result.get("filled") or 0),
             "resumeUploaded": uploaded,
-            "modelWarning": model_warning,
         }
-        unresolved = current["application"]["unresolvedRequired"]
-        optional = [
-            item
-            for item in current["application"].get("optionalQuestions") or []
-            if str(item.get("label") or "") not in self._skipped_optional_questions
+        required = current["application"]["unresolvedRequired"]
+        remaining_fields = [
+            {
+                "fieldId": item.get("fieldId"),
+                "label": item.get("label") or item.get("name") or "Application question",
+                "type": item.get("type") or "text",
+                "options": item.get("options") or [],
+                "sensitive": bool(item.get("sensitive")),
+                "optional": not bool(item.get("required")),
+            }
+            for item in current.get("fields") or []
+            if not str(item.get("currentValue") or "").strip()
         ]
-        questions = [*unresolved, *optional]
+        optional = current["application"].get("optionalQuestions") or []
+        questions = []
+        seen_questions: set[str] = set()
+        for item in [*required, *remaining_fields, *optional]:
+            field_id = str(item.get("fieldId") or "")
+            label = str(item.get("label") or "")
+            if (
+                not field_id
+                or field_id in seen_questions
+                or label in self._skipped_optional_questions
+            ):
+                continue
+            seen_questions.add(field_id)
+            questions.append(item)
         if questions:
             self._hydrate_question_options(questions)
             self._set(
                 phase="needs_input",
                 message=(
-                    "Juno filled the verified basics, but could not prepare the remaining questions. "
-                    "Answer the remaining questions here in Clover."
-                    if model_warning
-                    else (
-                        "Juno needs your answers below before she can continue."
-                        if unresolved
-                        else "Juno filled everything she can. Answer or skip these optional personal questions."
-                    )
+                    "Juno filled only answers already verified in your profile, resume, or saved "
+                    "application memory. Answer or skip the remaining fields here in Clover."
                 ),
                 unresolved=questions,
-                reviewFields=review,
+                reviewFields=[],
                 url=current["url"],
                 timing=timing,
             )
@@ -862,7 +842,7 @@ class ManagedBrowser:
                 phase="ready_to_submit",
                 message=message,
                 unresolved=[],
-                reviewFields=review,
+                reviewFields=[],
                 url=current["url"],
                 timing=timing,
             )
@@ -899,7 +879,7 @@ class ManagedBrowser:
             phase="needs_input",
             message="Juno filled what she could. Review the page in Chrome to continue.",
             unresolved=[],
-            reviewFields=review,
+            reviewFields=[],
             url=current["url"],
             timing=timing,
         )

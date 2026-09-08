@@ -98,13 +98,13 @@ private, read-only actions; submitting an application or communicating externall
 the person's explicit approval.
 
 Clover's visible application runner can prepare live application forms without a browser extension.
-It may fill only safe empty fields with grounded answers, attach the person's locally stored resume
-to a clearly identified resume or CV field, and navigate unambiguous Next or Continue steps.
-Protected-trait, identity, financial, password, low-confidence, and other sensitive questions stay
-manual. The person must review the live page and give one-time final confirmation in Clover
-immediately before submission. Never say an application was received merely because Clover clicked
-Submit; ask the person to confirm the employer's success page. Only that explicit receipt
-confirmation moves the opportunity to Applied and records the successful submission.
+It may automatically fill only exact facts already present in the person's profile, resume, or
+explicitly saved application answers. It must never generate or infer an answer for an application
+field. Every remaining field is raised to the person in Clover. The runner may attach the locally
+stored resume to a clearly identified resume or CV field and navigate one unambiguous Next or
+Continue step. The person must review the live page and give one-time final confirmation in Clover
+immediately before submission. Distinguish a detected employer receipt from a completed Submit
+click; both may mark the attempt as sent, but only receipt evidence means the employer confirmed it.
 
 ## Opportunities
 

@@ -14,6 +14,7 @@ from job_agent.managed_browser import (
 def page(
     *,
     value: str = "",
+    required: bool = True,
     submit: bool = False,
     continue_button: bool = False,
     unresolved: list[dict] | None = None,
@@ -30,7 +31,7 @@ def page(
                 "label": "Full name",
                 "name": "name",
                 "type": "text",
-                "required": True,
+                "required": required,
                 "maxLength": 100,
                 "currentValue": value,
                 "options": [],
@@ -91,56 +92,43 @@ class FakePage:
 class ManagedBrowserTests(unittest.TestCase):
     def setUp(self) -> None:
         self.quick = patch("job_agent.managed_browser.quick_answers", return_value=[])
-        self.cached = patch("job_agent.managed_browser.cached_answers", return_value=[])
-        self.remember = patch("job_agent.managed_browser.remember_answers")
         self.remember_user = patch("job_agent.managed_browser.remember_user_answers")
-        self.quick.start()
-        self.cached_mock = self.cached.start()
-        self.remember.start()
+        self.quick_mock = self.quick.start()
         self.remember_user_mock = self.remember_user.start()
 
     def tearDown(self) -> None:
         self.remember_user.stop()
-        self.remember.stop()
-        self.cached.stop()
         self.quick.stop()
 
     @patch("job_agent.managed_browser.document_file", return_value=None)
-    @patch("job_agent.managed_browser.suggest_fields")
-    def test_grounded_answers_and_role_specific_drafts_are_filled(
+    def test_unknown_fields_are_never_filled_from_model_generated_text(
         self,
-        suggest,
         _document,
     ) -> None:
-        suggest.return_value = {
-            "suggestions": [
-                {"fieldId": "name", "value": "Abbas", "source": "resume", "confidence": 0.98},
-                {
-                    "fieldId": "bio",
-                    "value": "A role-specific grounded draft",
-                    "source": "opportunity",
-                    "confidence": 0.8,
-                },
-            ]
-        }
         browser = ManagedBrowser()
-        fake = FakePage([page(), page(), page(), page(value="Abbas", submit=True)])
+        fake = FakePage([page(), page(), page()])
         browser._page = fake
         browser._state.update({"running": True, "phase": "watching"})
 
         browser._tick(force=True)
 
-        self.assertEqual(["name", "bio"], [item["fieldId"] for item in fake.filled])
-        self.assertEqual("ready_to_submit", browser.status()["phase"])
+        self.assertEqual([], fake.filled)
+        self.assertEqual("needs_input", browser.status()["phase"])
+        self.assertEqual("Full name", browser.status()["unresolved"][0]["label"])
 
     @patch("job_agent.managed_browser.document_file", return_value=None)
-    @patch("job_agent.managed_browser.suggest_fields", return_value={"suggestions": []})
     def test_sensitive_required_questions_pause_for_the_person(
         self,
-        _suggest,
         _document,
     ) -> None:
-        sensitive = [{"label": "Veteran status", "type": "radio", "sensitive": True}]
+        sensitive = [
+            {
+                "fieldId": "veteran",
+                "label": "Veteran status",
+                "type": "radio",
+                "sensitive": True,
+            }
+        ]
         browser = ManagedBrowser()
         browser._page = FakePage(
             [
@@ -159,10 +147,8 @@ class ManagedBrowserTests(unittest.TestCase):
         self.assertTrue(state["unresolved"][0]["sensitive"])
 
     @patch("job_agent.managed_browser.document_file", return_value=None)
-    @patch("job_agent.managed_browser.suggest_fields", return_value={"suggestions": []})
     def test_continue_must_actually_advance_before_runner_proceeds(
         self,
-        _suggest,
         _document,
     ) -> None:
         unchanged = page(value="Already complete", continue_button=True)
@@ -216,33 +202,24 @@ class ManagedBrowserTests(unittest.TestCase):
         self.assertEqual("resume.pdf", fake.upload["name"])
 
     @patch("job_agent.managed_browser.document_file", return_value=None)
-    @patch(
-        "job_agent.managed_browser.suggest_fields",
-        side_effect=ValueError("Juno did not return structured field answers."),
-    )
-    def test_invalid_model_json_does_not_abort_application_runner(
-        self,
-        _suggest,
-        _document,
+    def test_visually_required_field_is_surfaced_even_without_required_attribute(
+        self, _document
     ) -> None:
-        unresolved = [{"label": "School", "type": "text", "sensitive": False}]
-        current = page(unresolved=unresolved)
+        current = page(required=False)
         browser = ManagedBrowser()
-        browser._page = FakePage([current, current, current, current])
+        browser._page = FakePage([current, current, current])
         browser._state.update({"running": True, "phase": "watching"})
 
         browser._tick(force=True)
 
         state = browser.status()
         self.assertEqual("needs_input", state["phase"])
-        self.assertIn("could not prepare", state["message"])
-        self.assertIn("structured field answers", state["timing"]["modelWarning"])
+        self.assertEqual("Full name", state["unresolved"][0]["label"])
+        self.assertTrue(state["unresolved"][0]["optional"])
 
     @patch("job_agent.managed_browser.document_file", return_value=None)
-    @patch("job_agent.managed_browser.suggest_fields", return_value={"suggestions": []})
     def test_person_can_answer_required_question_from_clover(
         self,
-        _suggest,
         _document,
     ) -> None:
         question = {
@@ -273,10 +250,8 @@ class ManagedBrowserTests(unittest.TestCase):
         self.remember_user_mock.assert_called_once()
 
     @patch("job_agent.managed_browser.document_file", return_value=None)
-    @patch("job_agent.managed_browser.suggest_fields", return_value={"suggestions": []})
     def test_person_can_skip_optional_personal_questions(
         self,
-        _suggest,
         _document,
     ) -> None:
         question = {
@@ -287,7 +262,7 @@ class ManagedBrowserTests(unittest.TestCase):
             "sensitive": True,
             "optional": True,
         }
-        current = page(submit=True, optional=[question])
+        current = page(value="Complete", submit=True, optional=[question])
         browser = ManagedBrowser()
         browser._page = FakePage([current, current, current, current, current])
         browser._state.update({"running": True, "phase": "needs_input"})
@@ -298,10 +273,8 @@ class ManagedBrowserTests(unittest.TestCase):
         self.assertIn("Demographic response", browser._skipped_optional_questions)
 
     @patch("job_agent.managed_browser.document_file", return_value=None)
-    @patch("job_agent.managed_browser.suggest_fields", return_value={"suggestions": []})
     def test_remembered_personal_answer_is_reused_automatically(
         self,
-        _suggest,
         _document,
     ) -> None:
         question = {
@@ -312,9 +285,9 @@ class ManagedBrowserTests(unittest.TestCase):
             "sensitive": True,
             "optional": True,
         }
-        waiting = page(optional=[question])
+        waiting = page(value="Complete", optional=[question])
         complete = page(value="Complete", submit=True)
-        self.cached_mock.return_value = [
+        self.quick_mock.return_value = [
             {
                 "fieldId": "demographic",
                 "value": "Prefer not to answer",
@@ -323,7 +296,7 @@ class ManagedBrowserTests(unittest.TestCase):
             }
         ]
         browser = ManagedBrowser()
-        fake = FakePage([waiting, waiting, waiting, waiting, complete])
+        fake = FakePage([waiting, waiting, waiting, complete])
         browser._page = fake
         browser._state.update({"running": True, "phase": "watching"})
 

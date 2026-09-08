@@ -408,7 +408,7 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
           state.timing
             ? el("div", {
                 class: "small faint",
-                text: `${state.timing.quickFilled || 0} filled instantly · ${state.timing.junoFilled || 0} prepared by Juno · ${(state.timing.elapsedMs / 1000).toFixed(1)}s`,
+                text: `${state.timing.quickFilled || 0} filled from verified information · ${(state.timing.elapsedMs / 1000).toFixed(1)}s`,
               })
             : null,
           unresolved.length
