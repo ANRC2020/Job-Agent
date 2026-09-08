@@ -75,6 +75,9 @@ def _browser_executable() -> str | None:
 CAPTURE_SCRIPT = r"""
 () => {
   const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  document.querySelectorAll("[data-clover-field-id]").forEach((el) => {
+    delete el.dataset.cloverFieldId;
+  });
   const visible = (el) => {
     const style = getComputedStyle(el);
     const rect = el.getBoundingClientRect();
@@ -402,6 +405,11 @@ class ManagedBrowser:
                 command.result = command.action()
             except BaseException as exc:  # noqa: BLE001
                 command.error = exc
+                if self.status().get("running"):
+                    self._set(
+                        phase="error",
+                        message=f"Application runner paused: {exc}",
+                    )
             finally:
                 command.done.set()
 
@@ -630,11 +638,11 @@ class ManagedBrowser:
                 skipped += 1
                 continue
             locator = self._page.locator(f"[data-clover-field-id={json.dumps(field_id)}]")
-            if locator.count() != 1 or locator.input_value(timeout=1_000).strip():
-                skipped += 1
-                continue
             target = str(suggestion.get("value") or "").strip()
             try:
+                if locator.count() != 1 or locator.input_value(timeout=1_000).strip():
+                    skipped += 1
+                    continue
                 words = re.findall(r"[A-Za-z0-9]+", target)
                 search_terms = [target]
                 if len(words) > 1:
