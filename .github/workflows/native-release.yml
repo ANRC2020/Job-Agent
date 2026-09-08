@@ -1,0 +1,100 @@
+name: Native Clover release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version embedded in the installers
+        required: true
+        default: 0.1.0
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CLOVER_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pyinstaller
+          choco install innosetup -y --no-progress
+      - name: Build Windows installer
+        run: python scripts/build_native.py --version "$env:CLOVER_VERSION"
+      - name: Smoke test frozen Windows app
+        shell: powershell
+        run: |
+          $env:CLOVER_NATIVE_SMOKE_TEST = "1"
+          $env:JOB_AGENT_DATA_DIR = Join-Path $env:RUNNER_TEMP "clover-native-smoke"
+          $Process = Start-Process -FilePath ".\dist\Clover\Clover.exe" -Wait -PassThru
+          if ($Process.ExitCode -ne 0) {
+            throw "Frozen Clover exited with code $($Process.ExitCode)"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clover-Windows
+          path: dist/Clover-Windows-Setup.exe
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            architecture: arm64
+          - runner: macos-26-intel
+            architecture: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pyinstaller
+      - name: Build macOS disk image
+        run: |
+          python scripts/build_native.py --version "$CLOVER_VERSION"
+          mv dist/Clover-macOS.dmg "dist/Clover-macOS-${{ matrix.architecture }}.dmg"
+      - name: Smoke test frozen macOS app
+        run: |
+          CLOVER_NATIVE_SMOKE_TEST=1 \
+          JOB_AGENT_DATA_DIR="$RUNNER_TEMP/clover-native-smoke" \
+            ./dist/Clover.app/Contents/MacOS/Clover
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clover-macOS-${{ matrix.architecture }}
+          path: dist/Clover-macOS-${{ matrix.architecture }}.dmg
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

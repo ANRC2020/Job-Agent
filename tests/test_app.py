@@ -7,7 +7,7 @@ import threading
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from job_agent.app import _bind_server, _model_messages, _supervise_runtime
 from job_agent.autonomy import list_pending_actions, queue_approval
@@ -15,6 +15,7 @@ from job_agent.storage import initialize_database
 
 
 class RuntimeSupervisorTests(unittest.TestCase):
+    @patch("job_agent.app.lms_bin", return_value="lms")
     @patch("job_agent.app.start_runtime", return_value="repaired-session")
     @patch(
         "job_agent.app.runtime_ready",
@@ -22,7 +23,7 @@ class RuntimeSupervisorTests(unittest.TestCase):
     )
     @patch("job_agent.app.ensure_model")
     def test_server_drop_is_repaired_while_clover_stays_open(
-        self, ensure, _status, start
+        self, ensure, _status, start, _lms
     ) -> None:
         stop = threading.Event()
         holder: dict = {"session": None}
@@ -34,10 +35,11 @@ class RuntimeSupervisorTests(unittest.TestCase):
         start.assert_called_once()
         self.assertEqual("repaired-session", holder["session"])
 
+    @patch("job_agent.app.lms_bin", return_value="lms")
     @patch("job_agent.app.runtime_ready", return_value=False)
     @patch("job_agent.app.ensure_model")
     def test_transient_start_failure_retries_without_repeating_setup(
-        self, ensure, _status
+        self, ensure, _status, _lms
     ) -> None:
         stop = threading.Event()
         holder: dict = {"session": None}
@@ -65,6 +67,30 @@ class RuntimeSupervisorTests(unittest.TestCase):
         self.assertEqual(2, attempts)
         self.assertEqual("healthy-session", holder["session"])
         self.assertTrue(any("retrying" in message for message in logs))
+
+    @patch("job_agent.app.run_setup")
+    @patch("job_agent.app.lms_bin", return_value=None)
+    @patch("job_agent.app.runtime_ready", return_value=False)
+    @patch("job_agent.app.ensure_model")
+    def test_native_first_launch_installs_runtime_without_replacing_native_app(
+        self, ensure, _status, _lms, setup
+    ) -> None:
+        stop = threading.Event()
+        holder: dict = {"session": None}
+
+        def start() -> str:
+            stop.set()
+            return "native-session"
+
+        with patch("job_agent.app.start_runtime", side_effect=start):
+            _supervise_runtime(stop, holder, health_interval=0, retry_base=0)
+
+        setup.assert_called_once_with(
+            log=ANY,
+            download_model=False,
+            install_clover_desktop=False,
+        )
+        ensure.assert_called_once()
 
 
 class AppApiTests(unittest.TestCase):

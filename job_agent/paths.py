@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
 def repo_root() -> Path:
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        return Path(frozen_root)
     return Path(__file__).resolve().parent.parent
 
 

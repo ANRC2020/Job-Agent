@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 
 from job_agent.paths import repo_root
+from job_agent.storage import app_data_dir
 
 DEFAULT_MODEL = "qwen/qwen3.5-4b"
 MODEL_INSTANCE_ID = "clover-juno"
@@ -24,14 +26,22 @@ class InstallConfig:
 
 
 def config_path():
+    if getattr(sys, "frozen", False):
+        return app_data_dir() / "install.json"
     return repo_root() / "config" / "install.json"
 
 
 def load_raw() -> dict:
+    bundled = repo_root() / "config" / "install.json"
+    raw = (
+        json.loads(bundled.read_text(encoding="utf-8"))
+        if bundled.is_file()
+        else {}
+    )
     path = config_path()
-    if path.is_file():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {}
+    if path.is_file() and path != bundled:
+        raw.update(json.loads(path.read_text(encoding="utf-8")))
+    return raw
 
 
 def load_config() -> InstallConfig:

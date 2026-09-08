@@ -139,7 +139,12 @@ def ensure_model(log: Log = print) -> None:
         log(output)
 
 
-def run_setup(log: Log = print, *, download_model: bool = True) -> None:
+def run_setup(
+    log: Log = print,
+    *,
+    download_model: bool = True,
+    install_clover_desktop: bool = True,
+) -> None:
     cfg = load_config()
     log("Clover setup")
     database = initialize_database()
@@ -163,5 +168,6 @@ def run_setup(log: Log = print, *, download_model: bool = True) -> None:
         log("Juno's model will finish downloading after Clover opens.")
     ensure_prompt_and_mcp()
     log("Wrote system prompt and MCP config")
-    install_desktop(log)
+    if install_clover_desktop:
+        install_desktop(log)
     log("Setup complete. Open Clover from Applications, the Desktop, or: job-agent launch")

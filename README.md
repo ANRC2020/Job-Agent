@@ -25,37 +25,40 @@ anywhere in Clover.
 
 You do not need Python, LM Studio, or developer tools beforehand.
 
-1. [Download Clover](https://github.com/ANRC2020/Job-Agent/archive/refs/heads/main.zip).
-2. Unzip the downloaded folder.
-3. Run the installer for your computer:
+Open the [latest Clover release](https://github.com/ANRC2020/Job-Agent/releases/latest), then
+download the installer for your computer.
 
 **Mac**
 
-Double-click **`install.command`**. If macOS shows a security warning, right-click it once and
-choose **Open**.
+- Apple Silicon (M1 or newer): **`Clover-macOS-arm64.dmg`**
+- Intel Mac: **`Clover-macOS-x64.dmg`**
+
+Open the DMG and drag Clover into Applications. Until the app is code-signed, the first launch may
+require right-clicking Clover and choosing **Open**.
 
 **Windows**
 
-Double-click **`install.cmd`**.
+Download **`Clover-Windows-Setup.exe`** and double-click it. Until the installer is code-signed,
+Windows may require **More info → Run anyway** on the first installation.
 
-That installs the desktop app, sets up LM Studio only if it is missing, and opens Clover without
-waiting for the model download. Juno finishes downloading in the background with status shown
-inside Clover. After installation, use the **Clover** shortcut on the Desktop or Start Menu.
-Clover starts and stops Juno automatically; no terminal should remain open.
+The native app sets up LM Studio only if it is missing and opens without waiting for the model
+download. Juno finishes downloading in the background with status shown inside Clover. Clover
+starts and stops Juno automatically; no terminal remains open.
 
-Developers can instead clone the repository and run `./install.sh` on Mac or `install.cmd` on
+Developers can still clone the repository and run `./install.command` on Mac or `install.cmd` on
 Windows.
 
 ## Uninstall
 
-Open the same downloaded Clover folder and run:
+With a native installation:
 
-- **Mac:** double-click **`uninstall.command`**
-- **Windows:** double-click **`uninstall.cmd`**
+- **Mac:** move Clover from Applications to the Trash.
+- **Windows:** open **Settings → Apps → Installed apps → Clover → Uninstall**.
 
-The uninstaller removes the Clover app, shortcuts, and private Python environment. It preserves
-your profile, conversations, opportunities, and application history by default so reinstalling
-restores them. The uninstaller asks separately before permanently deleting that data.
+These standard uninstall actions preserve your profile, conversations, opportunities, and
+application history so reinstalling restores them. Users of an older source-based version can
+download the latest repository ZIP and run `uninstall.command` or `uninstall.cmd`; it discovers
+the older installation automatically and asks separately before permanently deleting personal data.
 
 LM Studio is left installed because other local applications may use it. After uninstalling, the
 downloaded Clover folder can be deleted normally.

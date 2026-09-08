@@ -25,6 +25,7 @@ from job_agent.documents import refresh_pdf_extractions, save_document_base64, s
 from job_agent.home import home_overview
 from job_agent.learning import learning_detail
 from job_agent.learning_extraction import schedule_learning_extraction
+from job_agent.lmstudio import lms_bin
 from job_agent.managed_browser import managed_browser
 from job_agent.personalization import personalization_data
 from job_agent.readiness import readiness, technical_status
@@ -727,6 +728,13 @@ def _supervise_runtime(
     while not stop_event.is_set():
         try:
             if not prepared:
+                if lms_bin() is None:
+                    log("Installing Juno's local runtime")
+                    run_setup(
+                        log=log,
+                        download_model=False,
+                        install_clover_desktop=False,
+                    )
                 ensure_model()
                 prepared = True
             if not runtime_ready():

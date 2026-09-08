@@ -5,6 +5,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -238,6 +239,11 @@ def ensure_prompt_and_mcp() -> None:
     src = system_prompt_path()
     if src.is_file():
         dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    # Native Clover executes its tools in-process. The legacy MCP entry is a
+    # source-tree script and a frozen extraction path would disappear on exit.
+    if getattr(sys, "frozen", False):
+        return
 
     bundled = venv_python()
     python = str(bundled) if bundled else (shutil.which("python3") or shutil.which("python"))
