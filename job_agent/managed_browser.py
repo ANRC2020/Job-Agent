@@ -22,6 +22,7 @@ from job_agent.application_forms import (
     cancel_application_submission,
     complete_application_submission,
     confirm_application_received,
+    record_application_sent,
     request_application_submission,
     sanitize_page,
     suggest_fields,
@@ -236,6 +237,15 @@ CAPTURE_SCRIPT = r"""
   });
   if (finalButtons.length === 1) finalButtons[0].element.dataset.cloverSubmit = "true";
   if (continueButtons.length === 1) continueButtons[0].element.dataset.cloverContinue = "true";
+  const receiptText = clean(
+    [...document.querySelectorAll("h1, h2, [role='alert'], [role='status']")]
+      .map((el) => el.textContent).join(" ") +
+    " " + (document.querySelector("main")?.textContent || "")
+  ).slice(0, 5000);
+  const receiptFromUrl = /\b(thank.?you|confirmation|application.?submitted|success)\b/i
+    .test(location.pathname + location.search);
+  const receiptFromText = /\b(thank you for (?:applying|your application)|application (?:has been )?(?:received|submitted)|we(?:'ve| have) received your application|successfully submitted|application complete)\b/i
+    .test(receiptText);
   return {
     url: location.href,
     title: clean(document.querySelector("h1")?.textContent || document.title),
@@ -246,6 +256,10 @@ CAPTURE_SCRIPT = r"""
       fileFields,
       unresolvedRequired: unresolvedRequired.slice(0, 30),
       optionalQuestions: optionalQuestions.slice(0, 20),
+      receipt: {
+        detected: receiptFromUrl || receiptFromText,
+        source: receiptFromUrl ? "url" : receiptFromText ? "page" : "",
+      },
       submit: {
         available: finalButtons.length === 1,
         ambiguous: finalButtons.length > 1,
@@ -361,6 +375,7 @@ class ManagedBrowser:
         self._opportunity_id = ""
         self._last_signature = ""
         self._skipped_optional_questions: set[str] = set()
+        self._receipt_started_at = 0.0
         self._state: dict[str, Any] = {
             "running": False,
             "phase": "closed",
@@ -397,7 +412,10 @@ class ManagedBrowser:
                 command = self._commands.get(timeout=0.75)
             except queue.Empty:
                 try:
-                    self._tick()
+                    if self.status().get("phase") == "awaiting_receipt":
+                        self._check_receipt()
+                    else:
+                        self._tick()
                 except Exception as exc:  # noqa: BLE001
                     self._set(phase="error", message=f"Application runner paused: {exc}")
                 continue
@@ -447,6 +465,7 @@ class ManagedBrowser:
         self._opportunity_id = opportunity_id
         self._last_signature = ""
         self._skipped_optional_questions.clear()
+        self._receipt_started_at = 0.0
         self._set(
             running=True,
             phase="loading",
@@ -941,9 +960,12 @@ class ManagedBrowser:
         complete_application_submission(action_id, succeeded=True)
         self._set(
             phase="awaiting_receipt",
-            message="Confirm once the employer shows a success or receipt page.",
+            message="Juno is confirming that the employer received the application.",
             submission={**(self.status().get("submission") or {}), **approval},
         )
+        self._receipt_started_at = time.monotonic()
+        self._page.wait_for_timeout(800)
+        self._check_receipt()
         return self.status()
 
     def cancel_submission(self, action_id: str) -> dict[str, Any]:
@@ -956,6 +978,45 @@ class ManagedBrowser:
 
     def confirm_receipt(self, action_id: str) -> dict[str, Any]:
         return self._call(lambda: self._confirm_receipt(action_id))
+
+    def _check_receipt(self) -> None:
+        state = self.status()
+        action_id = str((state.get("submission") or {}).get("actionId") or "")
+        if state.get("phase") != "awaiting_receipt" or not action_id:
+            return
+        current = None
+        try:
+            current = self._capture()
+            self._set(url=current["url"])
+        except Exception:  # noqa: BLE001 - submission completion does not depend on an open tab
+            pass
+        detected = bool(
+            current
+            and current.get("application", {}).get("receipt", {}).get("detected")
+        )
+        if not detected and time.monotonic() - self._receipt_started_at < 8:
+            return
+        result = (
+            confirm_application_received(
+                action_id,
+                current,
+                person_id=DEFAULT_PERSON_ID,
+                connection_id=MANAGED_CONNECTION_ID,
+                confirmed_by_user=False,
+            )
+            if detected
+            else record_application_sent(action_id, person_id=DEFAULT_PERSON_ID)
+        )
+        self._set(
+            phase="completed",
+            message=(
+                "Application received and marked as applied."
+                if detected
+                else "Application submitted and marked as applied."
+            ),
+            submission=None,
+            receipt=result,
+        )
 
     def _confirm_receipt(self, action_id: str) -> dict[str, Any]:
         result = confirm_application_received(

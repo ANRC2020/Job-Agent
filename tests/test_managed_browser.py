@@ -332,6 +332,60 @@ class ManagedBrowserTests(unittest.TestCase):
         self.assertEqual("ready_to_submit", browser.status()["phase"])
         self.assertEqual("Prefer not to answer", fake.filled[0]["value"])
 
+    @patch(
+        "job_agent.managed_browser.confirm_application_received",
+        return_value={"stage": "applied", "status": "confirmed"},
+    )
+    def test_employer_receipt_is_detected_without_person_confirmation(
+        self,
+        confirm,
+    ) -> None:
+        receipt = page()
+        receipt["url"] = "https://jobs.example.test/application/thank-you"
+        receipt["application"]["receipt"] = {"detected": True, "source": "url"}
+        browser = ManagedBrowser()
+        browser._page = FakePage([receipt])
+        browser._state.update(
+            {
+                "running": True,
+                "phase": "awaiting_receipt",
+                "submission": {"actionId": "submit-1"},
+            }
+        )
+
+        browser._check_receipt()
+
+        self.assertEqual("completed", browser.status()["phase"])
+        confirm.assert_called_once()
+        self.assertFalse(confirm.call_args.kwargs["confirmed_by_user"])
+
+    @patch(
+        "job_agent.managed_browser.record_application_sent",
+        return_value={"stage": "applied", "status": "sent"},
+    )
+    def test_missing_receipt_does_not_pause_completed_submission(
+        self,
+        record_sent,
+    ) -> None:
+        submitted = page()
+        submitted["application"]["receipt"] = {"detected": False, "source": ""}
+        browser = ManagedBrowser()
+        browser._page = FakePage([submitted])
+        browser._state.update(
+            {
+                "running": True,
+                "phase": "awaiting_receipt",
+                "submission": {"actionId": "submit-1"},
+            }
+        )
+        browser._receipt_started_at = 0
+
+        browser._check_receipt()
+
+        self.assertEqual("completed", browser.status()["phase"])
+        record_sent.assert_called_once()
+        self.assertEqual("submit-1", record_sent.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

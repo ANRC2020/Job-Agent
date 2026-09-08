@@ -16,6 +16,7 @@ from job_agent.application_forms import (
     cancel_application_submission,
     complete_application_submission,
     confirm_application_received,
+    record_application_sent,
     request_application_submission,
     resolve_page,
     sanitize_page,
@@ -230,6 +231,53 @@ class ApplicationFormTests(unittest.TestCase):
         self.assertEqual("applied", detail["stage"])
         self.assertTrue(
             any("receipt confirmed" in item["summary"].lower() for item in detail["interactions"])
+        )
+
+    def test_automatically_detected_receipt_records_system_confirmation(self) -> None:
+        requested = request_application_submission(
+            self.page(),
+            connection_id="browser-a",
+        )
+        approve_application_submission(
+            requested["actionId"],
+            self.page(),
+            connection_id="browser-a",
+        )
+        complete_application_submission(requested["actionId"], succeeded=True)
+        receipt_page = self.page()
+        receipt_page["url"] = "https://jobs.example.test/application/thank-you"
+
+        confirm_application_received(
+            requested["actionId"],
+            receipt_page,
+            connection_id="browser-a",
+            confirmed_by_user=False,
+        )
+        detail = opportunities.get_opportunity(requested["opportunityId"])
+
+        self.assertTrue(
+            any("automatically detected" in item["summary"].lower() for item in detail["interactions"])
+        )
+
+    def test_completed_submission_without_receipt_is_still_marked_applied(self) -> None:
+        requested = request_application_submission(
+            self.page(),
+            connection_id="browser-a",
+        )
+        approve_application_submission(
+            requested["actionId"],
+            self.page(),
+            connection_id="browser-a",
+        )
+        complete_application_submission(requested["actionId"], succeeded=True)
+
+        result = record_application_sent(requested["actionId"])
+        detail = opportunities.get_opportunity(requested["opportunityId"])
+
+        self.assertEqual("sent", result["status"])
+        self.assertEqual("applied", detail["stage"])
+        self.assertTrue(
+            any("no employer receipt" in item["summary"].lower() for item in detail["interactions"])
         )
 
     def test_receipt_confirmation_requires_same_browser_and_completed_click(self) -> None:

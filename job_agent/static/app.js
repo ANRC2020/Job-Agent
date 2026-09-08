@@ -353,7 +353,15 @@ async function refreshApplicationNotice() {
     ]);
     if (
       !state.running ||
-      ["closed", "completed", "loading", "watching", "preparing", "navigating"].includes(state.phase)
+      [
+        "closed",
+        "completed",
+        "loading",
+        "watching",
+        "preparing",
+        "navigating",
+        "awaiting_receipt",
+      ].includes(state.phase)
     ) {
       applicationNotice.style.display = "none";
       clear(applicationNotice);

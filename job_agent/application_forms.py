@@ -659,8 +659,9 @@ def confirm_application_received(
     *,
     person_id: str = DEFAULT_PERSON_ID,
     connection_id: str = "",
+    confirmed_by_user: bool = True,
 ) -> dict[str, Any]:
-    """Record Applied only after the person confirms the employer success page."""
+    """Record Applied after a person or Clover confirms the employer success page."""
     action = _submission_action(action_id, person_id)
     if action is None or action["action_name"] != "submit_application":
         raise ValueError("That application submission no longer exists.")
@@ -682,13 +683,21 @@ def confirm_application_received(
         events.transition_stage(
             opportunity_id,
             "applied",
-            reason="Employer receipt page confirmed by user",
-            actor="user",
+            reason=(
+                "Employer receipt page confirmed by user"
+                if confirmed_by_user
+                else "Employer receipt page detected by Clover"
+            ),
+            actor="user" if confirmed_by_user else "system",
             person_id=person_id,
         )
         events.record_interaction(
             opportunity_id,
-            f"Application receipt confirmed on {page['url']}",
+            (
+                f"Application receipt confirmed on {page['url']}"
+                if confirmed_by_user
+                else f"Application receipt automatically detected on {page['url']}"
+            ),
             kind="application",
             person_id=person_id,
         )
@@ -697,6 +706,44 @@ def confirm_application_received(
         "opportunityId": opportunity_id,
         "stage": "applied",
         "status": "confirmed",
+    }
+
+
+def record_application_sent(
+    action_id: str,
+    *,
+    person_id: str = DEFAULT_PERSON_ID,
+) -> dict[str, Any]:
+    """Record an approved, completed submission click without claiming a receipt."""
+    action = _submission_action(action_id, person_id)
+    if action is None or action["action_name"] != "submit_application":
+        raise ValueError("That application submission no longer exists.")
+    if action["status"] != "completed":
+        raise ValueError("That application was not successfully submitted by Clover.")
+    opportunity_id = str(action["arguments"].get("opportunityId") or "")
+    detail = opportunities.get_opportunity(opportunity_id, person_id)
+    if detail is None:
+        raise ValueError("The submitted opportunity is no longer available.")
+    if detail["stage"] not in {"applied", "interviewing", "offer"}:
+        events.transition_stage(
+            opportunity_id,
+            "applied",
+            reason="Approved application submission completed",
+            actor="system",
+            person_id=person_id,
+        )
+        events.record_interaction(
+            opportunity_id,
+            "Clover completed the approved submission click; no employer receipt page was detected.",
+            kind="application",
+            person_id=person_id,
+        )
+    return {
+        "actionId": action_id,
+        "opportunityId": opportunity_id,
+        "stage": "applied",
+        "status": "sent",
+        "receiptDetected": False,
     }
 
 
