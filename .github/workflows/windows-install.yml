@@ -7,9 +7,12 @@ on:
     paths:
       - "install.cmd"
       - "install.ps1"
+      - "uninstall.cmd"
+      - "uninstall.ps1"
       - "pyproject.toml"
       - "job_agent/**"
       - "tests/windows_install_smoke.ps1"
+      - "tests/windows_uninstall_smoke.ps1"
       - ".github/workflows/windows-install.yml"
 
 jobs:
@@ -39,3 +42,7 @@ jobs:
             throw "LM Studio installer did not create $Lms"
           }
           & $Lms --version
+
+      - name: Uninstall Clover without deleting personal data
+        shell: powershell
+        run: .\tests\windows_uninstall_smoke.ps1

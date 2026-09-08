@@ -33,6 +33,7 @@ from job_agent.application_answers import (
     remember_answers,
     remember_user_answers,
 )
+from job_agent.reflection import reflection_for_stage
 from job_agent.storage import DEFAULT_PERSON_ID, app_data_dir
 
 MANAGED_CONNECTION_ID = "clover-managed-browser"
@@ -1016,6 +1017,7 @@ class ManagedBrowser:
             ),
             submission=None,
             receipt=result,
+            reflection=reflection_for_stage(self._opportunity_id, "applied"),
         )
 
     def _confirm_receipt(self, action_id: str) -> dict[str, Any]:
@@ -1025,7 +1027,12 @@ class ManagedBrowser:
             person_id=DEFAULT_PERSON_ID,
             connection_id=MANAGED_CONNECTION_ID,
         )
-        self._set(phase="completed", message="Application marked as applied.", submission=None)
+        self._set(
+            phase="completed",
+            message="Application marked as applied.",
+            submission=None,
+            reflection=reflection_for_stage(self._opportunity_id, "applied"),
+        )
         return result
 
     def close(self) -> dict[str, Any]:

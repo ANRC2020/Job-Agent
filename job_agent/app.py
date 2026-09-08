@@ -24,6 +24,7 @@ from job_agent.context import build_turn_context
 from job_agent.documents import refresh_pdf_extractions, save_document_base64, save_pasted_text
 from job_agent.home import home_overview
 from job_agent.learning import learning_detail
+from job_agent.learning_extraction import schedule_learning_extraction
 from job_agent.managed_browser import managed_browser
 from job_agent.personalization import personalization_data
 from job_agent.readiness import readiness, technical_status
@@ -501,7 +502,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         thread_id = str(payload["_threadId"])
-        add_message(thread_id, "user", message)
+        user_message_id = add_message(thread_id, "user", message)
         history = _model_messages(thread_id)
         context = build_turn_context(
             conversation_id=thread_id,
@@ -575,6 +576,14 @@ class Handler(BaseHTTPRequestHandler):
             )
             add_message(thread_id, "assistant", content, model_run_id=run_id)
             add_tool_actions(thread_id, run_id, traces)
+            schedule_learning_extraction(
+                conversation_id=thread_id,
+                user_message_id=user_message_id,
+                user_message=message,
+                assistant_message=content,
+                opportunity_id=opportunity_id,
+                tools_used={str(name) for name in used if name},
+            )
         else:
             touch_conversation(thread_id)
         schedule_compaction(thread_id)

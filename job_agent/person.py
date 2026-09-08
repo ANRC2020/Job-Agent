@@ -303,12 +303,24 @@ def remember_fact(
 ) -> str:
     from job_agent.storage import new_id
 
-    clean = (statement or "").strip()
+    clean = " ".join((statement or "").split()).strip()
     if not clean:
         raise ValueError("There's nothing to remember yet.")
-    fact_id = new_id()
     now = utc_now()
     with transaction() as connection:
+        existing = connection.execute(
+            """
+            SELECT id FROM profile_fact
+            WHERE person_id = ? AND category = ? AND status = 'active'
+              AND lower(trim(statement)) = lower(trim(?))
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            (person_id, category, clean),
+        ).fetchone()
+        if existing is not None:
+            return str(existing["id"])
+        fact_id = new_id()
         connection.execute(
             """
             INSERT INTO profile_fact(

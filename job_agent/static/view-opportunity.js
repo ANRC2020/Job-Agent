@@ -265,6 +265,11 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
           }, true)
         );
       }
+      if (state.phase === "completed" && state.reflection?.prompt) {
+        runnerActions.append(
+          act("Reflect with Juno (optional)", () => talk(state.reflection.prompt))
+        );
+      }
       runnerActions.append(
         act("Close application browser", () => refresh("/api/browser/close"))
       );

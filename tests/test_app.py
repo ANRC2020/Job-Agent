@@ -114,8 +114,11 @@ class AppApiTests(unittest.TestCase):
         with urlopen(request, timeout=5) as response:
             return response.read().decode()
 
+    @patch("job_agent.app.schedule_learning_extraction")
     @patch("job_agent.app.readiness", return_value={"ready": True})
-    def test_chat_persists_reply_and_action_transparency(self, _readiness) -> None:
+    def test_chat_persists_reply_and_action_transparency(
+        self, _readiness, schedule_learning
+    ) -> None:
         result = {
             "type": "done",
             "content": "You have one role worth looking at.",
@@ -137,6 +140,11 @@ class AppApiTests(unittest.TestCase):
         thread = self.get("/api/thread")
         self.assertEqual(["user", "assistant"], [item["role"] for item in thread["messages"]])
         self.assertEqual("get_opportunities", thread["actions"][0]["tool_name"])
+        schedule_learning.assert_called_once()
+        self.assertEqual(
+            "What should I focus on?",
+            schedule_learning.call_args.kwargs["user_message"],
+        )
 
     @patch(
         "job_agent.app.readiness",

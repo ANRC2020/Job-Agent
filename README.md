@@ -23,31 +23,42 @@ anywhere in Clover.
 
 ## Install
 
-You do not need to install Python. The installer downloads a private copy.
+You do not need Python, LM Studio, or developer tools beforehand.
 
-```bash
-git clone https://github.com/ANRC2020/Job-Agent.git
-cd Job-Agent
-```
+1. [Download Clover](https://github.com/ANRC2020/Job-Agent/archive/refs/heads/main.zip).
+2. Unzip the downloaded folder.
+3. Run the installer for your computer:
 
 **Mac**
 
-```bash
-./install.sh
-```
+Double-click **`install.command`**. If macOS shows a security warning, right-click it once and
+choose **Open**.
 
 **Windows**
 
-Double-click `install.cmd`, or run:
-
-```bat
-install.cmd
-```
+Double-click **`install.cmd`**.
 
 That installs the desktop app, sets up LM Studio only if it is missing, and opens Clover without
 waiting for the model download. Juno finishes downloading in the background with status shown
 inside Clover. After installation, use the **Clover** shortcut on the Desktop or Start Menu.
 Clover starts and stops Juno automatically; no terminal should remain open.
+
+Developers can instead clone the repository and run `./install.sh` on Mac or `install.cmd` on
+Windows.
+
+## Uninstall
+
+Open the same downloaded Clover folder and run:
+
+- **Mac:** double-click **`uninstall.command`**
+- **Windows:** double-click **`uninstall.cmd`**
+
+The uninstaller removes the Clover app, shortcuts, and private Python environment. It preserves
+your profile, conversations, opportunities, and application history by default so reinstalling
+restores them. The uninstaller asks separately before permanently deleting that data.
+
+LM Studio is left installed because other local applications may use it. After uninstalling, the
+downloaded Clover folder can be deleted normally.
 
 ## Live web and job search
 
