@@ -224,6 +224,7 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
 
   const runner = el("div");
   let runnerPoll = null;
+  const questionDrafts = new Map();
   inner.append(runner);
 
   async function refreshRunner() {
@@ -245,7 +246,7 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
       }
       if (state.phase === "ready_to_submit") {
         runnerActions.append(
-          act("Review final submission", () => refresh("/api/browser/submission/request"), true)
+          act("Continue to submission approval", () => refresh("/api/browser/submission/request"), true)
         );
       }
       const actionId = state.submission?.actionId;
@@ -268,6 +269,130 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
         act("Close application browser", () => refresh("/api/browser/close"))
       );
       const unresolved = state.unresolved || [];
+      const answerable = unresolved.filter((item) => item.fieldId);
+      let questionPanel = null;
+      if (answerable.length) {
+        const controls = new Map();
+        const feedback = el("div", { class: "small warning" });
+        const form = el("form", {
+          class: "stack stack-3 application-questions",
+          onSubmit: async (event) => {
+            event.preventDefault();
+            const answers = [...controls.entries()]
+              .map(([fieldId, control]) => ({
+                fieldId,
+                value: String(control.value || "").trim(),
+              }))
+              .filter((item) => item.value);
+            if (!answers.length) {
+              feedback.textContent = "Answer at least one question to continue.";
+              return;
+            }
+            const button = form.querySelector("button[type='submit']");
+            button.disabled = true;
+            button.textContent = "Adding your answers…";
+            feedback.textContent = "";
+            try {
+              await api.post("/api/browser/answers", { answers });
+              for (const answer of answers) questionDrafts.delete(answer.fieldId);
+              refreshRunner();
+            } catch (problem) {
+              feedback.textContent = problem.message;
+              button.disabled = false;
+              button.textContent = "Continue application";
+            }
+          },
+        });
+        form.append(
+          el("div", { class: "eyebrow", text: "Juno needs your answer" }),
+          el("div", {
+            class: "small muted",
+            text: "Answer here and Juno will place it into the application. Nothing is submitted without your approval.",
+          })
+        );
+        for (const [index, item] of answerable.entries()) {
+          const controlId = `application-question-${index}`;
+          const options = item.options || [];
+          let control;
+          if (options.length) {
+            control = el(
+              "select",
+              {
+                id: controlId,
+                class: "field-input",
+                onChange: (event) => questionDrafts.set(item.fieldId, event.target.value),
+              },
+              el("option", { value: "", text: "Choose an answer…" }),
+              options.map((option) =>
+                el("option", {
+                  value: option,
+                  text: option,
+                  selected: questionDrafts.get(item.fieldId) === option,
+                })
+              )
+            );
+          } else if (item.type === "textarea") {
+            control = el("textarea", {
+              id: controlId,
+              class: "field-input",
+              rows: "3",
+              onInput: (event) => questionDrafts.set(item.fieldId, event.target.value),
+            });
+          } else {
+            control = el("input", {
+              id: controlId,
+              class: "field-input",
+              type: item.type === "number" ? "number" : "text",
+              onInput: (event) => questionDrafts.set(item.fieldId, event.target.value),
+            });
+          }
+          if (!options.length && questionDrafts.has(item.fieldId)) {
+            control.value = questionDrafts.get(item.fieldId);
+          }
+          controls.set(item.fieldId, control);
+          form.append(
+            el(
+              "label",
+              { class: "stack stack-2 application-question", for: controlId },
+              el("strong", {
+                class: item.sensitive ? "warning" : "",
+                text: `${item.label}${item.optional ? " (optional)" : ""}`,
+              }),
+              control,
+              item.sensitive
+                ? el("span", { class: "small warning", text: "Only you can answer this." })
+                : null
+            )
+          );
+        }
+        form.append(
+          feedback,
+          el(
+            "div",
+            { class: "actions" },
+            el("button", {
+              class: "btn btn-primary",
+              type: "submit",
+              text: "Continue application",
+            }),
+            answerable.some((item) => item.optional)
+              ? el("button", {
+                  class: "btn",
+                  type: "button",
+                  text: "Skip optional questions",
+                  onClick: async () => {
+                    await refresh("/api/browser/questions/skip", {
+                      fieldIds: answerable
+                        .filter((item) => item.optional)
+                        .map((item) => item.fieldId),
+                    });
+                  },
+                })
+              : null
+          )
+        );
+        questionPanel = form;
+      }
       runner.append(
         el(
           "div",
@@ -285,8 +410,12 @@ export async function renderOpportunity(root, nav, { id, flash = null } = {}) {
             ? el(
                 "div",
                 { class: "stack stack-2" },
-                el("div", { class: "small muted", text: "Waiting for you:" }),
-                unresolved.map((item) =>
+                answerable.length
+                  ? questionPanel
+                  : el("div", { class: "small muted", text: "Waiting for you in Chrome:" }),
+                answerable.length
+                  ? null
+                  : unresolved.map((item) =>
                   el("div", {
                     class: item.sensitive ? "small warning" : "small",
                     text: `— ${item.label}`,

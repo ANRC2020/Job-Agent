@@ -475,6 +475,36 @@ h3 { font: 600 14.5px/1.4 var(--sans); }
 }
 .notice .btn { background: transparent; }
 .notice > .stack { flex: 1; }
+.application-modal-host {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(24, 20, 14, 0.42);
+  backdrop-filter: blur(3px);
+}
+.application-modal {
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  padding: 22px;
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+.application-modal .application-questions {
+  padding: 0;
+  border: 0;
+}
+.application-modal .application-question {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
 .model-download { width: min(360px, 100%); margin-top: 6px; }
 .model-download-track {
   position: relative;
@@ -767,7 +797,7 @@ details.section > summary .count { margin-left: auto; color: var(--ink-3); font-
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field label { color: var(--ink-2); font-size: 13px; }
 
-input[type="text"], input[type="url"], select, textarea.field-input {
+input[type="text"], input[type="url"], input[type="number"], select, textarea.field-input {
   width: 100%;
   padding: 10px 13px;
   border: 1px solid var(--line-strong);
@@ -779,6 +809,13 @@ input[type="text"], input[type="url"], select, textarea.field-input {
 }
 input:focus, select:focus, textarea:focus { border-color: var(--clover); }
 textarea.field-input { resize: vertical; min-height: 96px; }
+.application-questions {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.application-question { gap: 6px; }
 
 .log {
   margin: 0;

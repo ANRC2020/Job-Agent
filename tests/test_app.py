@@ -231,6 +231,46 @@ class AppApiTests(unittest.TestCase):
             "opportunity-1",
         )
 
+    @patch("job_agent.app.managed_browser")
+    @patch("job_agent.app.readiness", return_value={"ready": True})
+    def test_application_questions_can_be_answered_inside_clover(
+        self,
+        _readiness,
+        browser,
+    ) -> None:
+        answers = [{"fieldId": "authorization", "value": "Yes"}]
+        browser.answer_questions.return_value = {
+            "running": True,
+            "phase": "ready_to_submit",
+        }
+
+        result = json.loads(self.post("/api/browser/answers", {"answers": answers}))
+
+        self.assertEqual("ready_to_submit", result["phase"])
+        browser.answer_questions.assert_called_once_with(answers)
+
+    @patch("job_agent.app.managed_browser")
+    @patch("job_agent.app.readiness", return_value={"ready": True})
+    def test_optional_application_questions_can_be_skipped(
+        self,
+        _readiness,
+        browser,
+    ) -> None:
+        browser.skip_optional_questions.return_value = {
+            "running": True,
+            "phase": "ready_to_submit",
+        }
+
+        result = json.loads(
+            self.post(
+                "/api/browser/questions/skip",
+                {"fieldIds": ["demographic"]},
+            )
+        )
+
+        self.assertEqual("ready_to_submit", result["phase"])
+        browser.skip_optional_questions.assert_called_once_with(["demographic"])
+
     def test_managed_browser_submission_requires_live_page_confirmation(self) -> None:
         action_id = queue_approval(
             action_name="submit_application",

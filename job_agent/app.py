@@ -435,6 +435,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(managed_browser.prepare())
 
+    def post_browser_answers(self, payload: dict[str, Any]) -> None:
+        if not self._juno_ready():
+            return
+        self._json(managed_browser.answer_questions(payload.get("answers")))
+
+    def post_browser_questions_skip(self, payload: dict[str, Any]) -> None:
+        if not self._juno_ready():
+            return
+        self._json(managed_browser.skip_optional_questions(payload.get("fieldIds")))
+
     def post_browser_submission_request(self, payload: dict[str, Any]) -> None:
         self._json(managed_browser.request_submission())
 
@@ -615,6 +625,8 @@ class Handler(BaseHTTPRequestHandler):
         ("approvals", ":action_id"): "post_approval",
         ("browser", "start"): "post_browser_start",
         ("browser", "prepare"): "post_browser_prepare",
+        ("browser", "answers"): "post_browser_answers",
+        ("browser", "questions", "skip"): "post_browser_questions_skip",
         ("browser", "submission", "request"): "post_browser_submission_request",
         ("browser", "submission", "approve"): "post_browser_submission_approve",
         ("browser", "submission", "cancel"): "post_browser_submission_cancel",

@@ -89,7 +89,16 @@ class ApplicationFormTests(unittest.TestCase):
         }
 
     def test_page_is_bounded_normalized_and_sensitive_fields_are_removed(self) -> None:
-        page = sanitize_page(self.page())
+        raw = self.page()
+        raw["fields"].append(
+            {
+                "fieldId": "demographic",
+                "label": "Racial or ethnic background",
+                "type": "text",
+                "currentValue": "",
+            }
+        )
+        page = sanitize_page(raw)
         self.assertEqual("https://jobs.example.test/role?gh_jid=42", page["url"])
         self.assertEqual(["safe"], [field["fieldId"] for field in page["fields"]])
         self.assertEqual("Remote - US", page["listing"]["location"]["text"])
@@ -139,19 +148,44 @@ class ApplicationFormTests(unittest.TestCase):
 
     def test_structured_answers_reject_unknown_fields_and_obey_length(self) -> None:
         response = {
-            "content": (
-                '{"fields":['
-                '{"fieldId":"safe","value":"A very long grounded answer","source":"resume","confidence":2},'
-                '{"fieldId":"unknown","value":"do not fill"}]}'
-            ),
-            "tools": [],
+            "fields": [
+                {
+                    "fieldId": "safe",
+                    "value": "A very long grounded answer",
+                    "source": "resume",
+                    "confidence": 2,
+                },
+                {"fieldId": "unknown", "value": "do not fill"},
+            ]
         }
-        with patch("job_agent.application_forms.complete", return_value=response):
+        with patch("job_agent.application_forms.complete_json", return_value=response):
             result = suggest_fields(self.page())
 
         self.assertEqual(["safe"], [item["fieldId"] for item in result["suggestions"]])
         self.assertEqual(20, len(result["suggestions"][0]["value"]))
         self.assertEqual(1.0, result["suggestions"][0]["confidence"])
+
+    def test_field_answers_use_schema_constrained_model_output(self) -> None:
+        response = {
+            "fields": [
+                {
+                    "fieldId": "safe",
+                    "value": "Grounded answer",
+                    "rationale": "Resume evidence",
+                    "source": "resume",
+                    "confidence": 0.95,
+                }
+            ]
+        }
+        with patch("job_agent.application_forms.complete_json", return_value=response) as model:
+            result = suggest_fields(self.page())
+
+        model.assert_called_once()
+        self.assertEqual("Grounded answer", result["suggestions"][0]["value"])
+        field_id_schema = model.call_args.kwargs["schema"]["properties"]["fields"]["items"][
+            "properties"
+        ]["fieldId"]
+        self.assertEqual(["safe"], field_id_schema["enum"])
 
     def test_resume_file_can_be_prepared_for_the_managed_browser(self) -> None:
         save_document(filename="resume.pdf", data=b"%PDF-test resume")

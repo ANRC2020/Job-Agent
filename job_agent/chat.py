@@ -80,6 +80,60 @@ def _request(payload: dict[str, Any]) -> Request:
     )
 
 
+def complete_json(
+    user_message: str,
+    *,
+    context: str = "",
+    schema: dict[str, Any],
+    name: str = "structured_response",
+    output_token_limit: int = TOOL_CALL_RETRY_OUTPUT_TOKENS,
+) -> dict[str, Any]:
+    """Use LM Studio's schema-constrained chat output for internal JSON tasks."""
+    if not wait_for_server(120):
+        raise ConnectionError("Juno's local engine did not finish starting.")
+    cfg = load_config()
+    payload = {
+        "model": MODEL_INSTANCE_ID,
+        "messages": [system_message(context), {"role": "user", "content": user_message}],
+        "temperature": 0.1,
+        "max_tokens": output_token_limit,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": name,
+                "strict": True,
+                "schema": schema,
+            },
+        },
+    }
+    request = Request(
+        cfg.api_base.rstrip("/").removesuffix("/v1") + "/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer lm-studio",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=MODEL_REQUEST_TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"LM Studio rejected Juno's structured request: {detail[:500]}") from exc
+    except TimeoutError as exc:
+        raise ModelResponseTimeout("Juno's structured response took too long.") from exc
+    try:
+        message = data["choices"][0]["message"]
+        text = str(message.get("content") or message.get("reasoning_content") or "").strip()
+        result = json.loads(text)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("Juno did not return valid structured field answers.") from exc
+    if not isinstance(result, dict):
+        raise ValueError("Juno did not return a field-answer object.")
+    return result
+
+
 def _post(payload: dict[str, Any], *, timeout: float = MODEL_REQUEST_TIMEOUT) -> dict[str, Any]:
     if not wait_for_server(120):
         raise ConnectionError("Juno's local engine did not finish starting.")
@@ -136,6 +190,7 @@ def _payload(
     tool_names: tuple[str, ...] | None,
     *,
     forced_tool: str | None = None,
+    output_token_limit: int = MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         # Address the exact instance Clover loaded at its bounded context size.
@@ -145,7 +200,7 @@ def _payload(
         "input": messages,
         "temperature": 0.4,
         "reasoning": {"effort": "none"},
-        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "max_output_tokens": output_token_limit,
         "stream": False,
         "store": False,
     }
@@ -319,6 +374,7 @@ def complete(
     context: str = "",
     tool_names: tuple[str, ...] | None = CHAT_TOOL_NAMES,
     opportunity_id: str | None = None,
+    output_token_limit: int = MAX_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
     cfg = load_config()
     begin_turn()
@@ -342,6 +398,7 @@ def complete(
                 messages,
                 tool_names,
                 forced_tool="search_jobs" if force_job_search and round_index == 0 else None,
+                output_token_limit=output_token_limit,
             ),
             timeout=min(MODEL_REQUEST_TIMEOUT, remaining),
         )

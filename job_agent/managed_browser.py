@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
+import difflib
 import json
 import os
 import platform
 import queue
+import re
 import shutil
 import threading
 import time
@@ -24,7 +26,12 @@ from job_agent.application_forms import (
     sanitize_page,
     suggest_fields,
 )
-from job_agent.application_answers import quick_answers, remember_answers
+from job_agent.application_answers import (
+    cached_answers,
+    quick_answers,
+    remember_answers,
+    remember_user_answers,
+)
 from job_agent.storage import DEFAULT_PERSON_ID, app_data_dir
 
 MANAGED_CONNECTION_ID = "clover-managed-browser"
@@ -79,8 +86,17 @@ CAPTURE_SCRIPT = r"""
       el.getAttribute("aria-label") || el.getAttribute("placeholder") ||
       el.getAttribute("name"));
   };
-  const currentValue = (el) => clean(el.value ?? el.textContent);
-  const sensitive = (el, label) => /\b(password|passcode|credit|debit|card number|cvv|cvc|bank|routing|social security|ssn|national id|government id|passport|driver.?s license|race|ethnicity|gender|sex|sexual orientation|disability|veteran|religion|date of birth|birth date|medical|health)\b/i
+  const currentValue = (el) => {
+    if (el.getAttribute("role") === "combobox") {
+      const control = el.closest("[class*='control']");
+      const selected = control?.querySelector(
+        "[class*='single-value'], [class*='multi-value']"
+      );
+      if (selected) return clean(selected.textContent);
+    }
+    return clean(el.value ?? el.textContent);
+  };
+  const sensitive = (el, label) => /\b(password|passcode|credit|debit|card number|cvv|cvc|bank|routing|social security|ssn|national id|government id|passport|driver.?s license|race|racial|ethnic|ethnicity|hispanic|transgender|gender|sex|sexual orientation|disability|veteran|religion|date of birth|birth date|medical|health)\b/i
     .test(`${label} ${el.name || ""} ${el.autocomplete || ""}`);
   const fields = [];
   [...document.querySelectorAll("input, textarea, select, [contenteditable='true']")].forEach((el, index) => {
@@ -88,7 +104,7 @@ CAPTURE_SCRIPT = r"""
       el.tagName === "TEXTAREA" ? "textarea" :
       el.isContentEditable ? "textarea" : clean(el.type || "text").toLowerCase();
     const label = labelFor(el);
-    if (!visible(el) || el.disabled || el.readOnly ||
+    if (!visible(el) || el.disabled || el.readOnly || el.getAttribute("aria-hidden") === "true" ||
         ["hidden", "password", "file", "submit", "reset", "button", "image", "checkbox", "radio"].includes(type) ||
         sensitive(el, label)) return;
     const fieldId = `clover-field-${index}`;
@@ -118,9 +134,17 @@ CAPTURE_SCRIPT = r"""
       };
     });
   const unresolvedRequired = [];
-  for (const el of document.querySelectorAll("input[required], textarea[required], select[required], [aria-required='true']")) {
-    const type = clean(el.type || el.tagName).toLowerCase();
-    if (!visible(el) || el.disabled || ["hidden", "submit", "button", "image"].includes(type)) continue;
+  const unresolvedKeys = new Set();
+  [...document.querySelectorAll("input[required], textarea[required], select[required], [aria-required='true']")]
+    .forEach((el, index) => {
+    const type = el.tagName === "SELECT" ? "select" :
+      el.tagName === "TEXTAREA" ? "textarea" :
+      clean(el.type || el.tagName).toLowerCase();
+    if (!visible(el) || el.disabled || el.getAttribute("aria-hidden") === "true" ||
+        ["hidden", "submit", "button", "image"].includes(type)) return;
+    const key = type === "radio" && el.name ? `radio:${el.name}` : `control:${index}`;
+    if (unresolvedKeys.has(key)) return;
+    unresolvedKeys.add(key);
     let complete = Boolean(currentValue(el));
     if (type === "checkbox") complete = el.checked;
     if (type === "radio") {
@@ -130,10 +154,66 @@ CAPTURE_SCRIPT = r"""
     }
     if (type === "file") complete = Boolean(el.files?.length);
     if (!complete) {
-      const label = labelFor(el) || "Required field";
-      unresolvedRequired.push({ label, type, sensitive: sensitive(el, label) });
+      const group = type === "radio" && el.name
+        ? [...document.querySelectorAll(`input[type='radio'][name="${CSS.escape(el.name)}"]`)]
+        : [el];
+      const fieldId = el.dataset.cloverFieldId || `clover-question-${index}`;
+      group.forEach((item) => { item.dataset.cloverFieldId = fieldId; });
+      const fieldset = el.closest("fieldset");
+      const label = clean(fieldset?.querySelector("legend")?.textContent) ||
+        labelFor(el) || "Required field";
+      let options = el.tagName === "SELECT"
+        ? [...el.options].map((option) => clean(option.textContent)).filter(Boolean)
+        : type === "radio"
+          ? group.map((item) => labelFor(item)).filter(Boolean)
+          : [];
+      if (!options.length && el.getAttribute("role") === "combobox" &&
+          /^(are|can|could|did|do|does|have|has|is|was|were|will|would)\b/i.test(label)) {
+        options = ["Yes", "No"];
+      }
+      unresolvedRequired.push({
+        fieldId, label, type, options,
+        sensitive: sensitive(el, label),
+      });
     }
-  }
+  });
+  const optionalQuestions = [];
+  const optionalKeys = new Set();
+  [...document.querySelectorAll("input, textarea, select, [contenteditable='true']")]
+    .forEach((el, index) => {
+    const type = el.tagName === "SELECT" ? "select" :
+      el.tagName === "TEXTAREA" ? "textarea" :
+      el.isContentEditable ? "textarea" : clean(el.type || "text").toLowerCase();
+    if (!visible(el) || el.disabled || el.readOnly ||
+        el.required || el.getAttribute("aria-required") === "true" ||
+        el.getAttribute("aria-hidden") === "true" ||
+        ["hidden", "password", "file", "submit", "reset", "button", "image"].includes(type)) return;
+    const fieldset = el.closest("fieldset");
+    const label = clean(fieldset?.querySelector("legend")?.textContent) ||
+      labelFor(el) || "Optional question";
+    if (!sensitive(el, label)) return;
+    const key = type === "radio" && el.name ? `radio:${el.name}` : `control:${index}`;
+    if (optionalKeys.has(key)) return;
+    optionalKeys.add(key);
+    const group = type === "radio" && el.name
+      ? [...document.querySelectorAll(`input[type='radio'][name="${CSS.escape(el.name)}"]`)]
+      : [el];
+    let complete = Boolean(currentValue(el));
+    if (type === "checkbox") complete = el.checked;
+    if (type === "radio") complete = group.some((item) => item.checked);
+    if (complete) return;
+    const fieldId = el.dataset.cloverFieldId || `clover-optional-${index}`;
+    group.forEach((item) => { item.dataset.cloverFieldId = fieldId; });
+    const options = el.tagName === "SELECT"
+      ? [...el.options].map((option) => clean(option.textContent)).filter(Boolean)
+      : type === "radio"
+        ? group.map((item) => labelFor(item)).filter(Boolean)
+        : [];
+    optionalQuestions.push({
+      fieldId, label, type, options,
+      sensitive: true, optional: true,
+    });
+  });
   const buttons = [...document.querySelectorAll("button, input[type='submit'], input[type='button'], a[role='button']")]
     .filter((el) => visible(el) && !el.disabled)
     .map((el) => ({ element: el, label: clean(el.textContent || el.value || el.getAttribute("aria-label")) }))
@@ -162,6 +242,7 @@ CAPTURE_SCRIPT = r"""
     application: {
       fileFields,
       unresolvedRequired: unresolvedRequired.slice(0, 30),
+      optionalQuestions: optionalQuestions.slice(0, 20),
       submit: {
         available: finalButtons.length === 1,
         ambiguous: finalButtons.length > 1,
@@ -215,6 +296,48 @@ FILL_SCRIPT = r"""
 }
 """
 
+COMBOBOX_IDS_SCRIPT = r"""
+() => [...document.querySelectorAll("[data-clover-field-id][role='combobox']")]
+  .map((element) => element.dataset.cloverFieldId)
+"""
+
+CHOICE_FILL_SCRIPT = r"""
+(answers) => {
+  const clean = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const labelFor = (el) => {
+    const explicit = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+    return clean(explicit?.textContent || el.closest("label")?.textContent ||
+      el.getAttribute("aria-label") || el.value);
+  };
+  const handled = [];
+  let filled = 0;
+  let skipped = 0;
+  for (const answer of answers || []) {
+    const controls = [...document.querySelectorAll("[data-clover-field-id]")]
+      .filter((item) => item.dataset.cloverFieldId === answer.fieldId);
+    const type = clean(controls[0]?.type);
+    if (!["radio", "checkbox"].includes(type)) continue;
+    handled.push(answer.fieldId);
+    const wanted = clean(answer.value);
+    if (type === "radio") {
+      const control = controls.find((item) =>
+        labelFor(item) === wanted || clean(item.value) === wanted);
+      if (!control) {
+        skipped += 1;
+        continue;
+      }
+      control.click();
+      filled += 1;
+      continue;
+    }
+    const checked = ["yes", "true", "1", "checked"].includes(wanted);
+    if (controls[0].checked !== checked) controls[0].click();
+    filled += 1;
+  }
+  return { handled, filled, skipped };
+}
+"""
+
 
 @dataclass
 class _Command:
@@ -234,6 +357,7 @@ class ManagedBrowser:
         self._page: Any = None
         self._opportunity_id = ""
         self._last_signature = ""
+        self._skipped_optional_questions: set[str] = set()
         self._state: dict[str, Any] = {
             "running": False,
             "phase": "closed",
@@ -285,6 +409,8 @@ class ManagedBrowser:
         return self._call(lambda: self._start(url, opportunity_id))
 
     def _start(self, url: str, opportunity_id: str) -> dict[str, Any]:
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("A valid application URL is required.")
         if self._context is None:
             from playwright.sync_api import sync_playwright
 
@@ -312,6 +438,7 @@ class ManagedBrowser:
         self._page = self._context.pages[-1] if self._context.pages else self._context.new_page()
         self._opportunity_id = opportunity_id
         self._last_signature = ""
+        self._skipped_optional_questions.clear()
         self._set(
             running=True,
             phase="loading",
@@ -321,6 +448,7 @@ class ManagedBrowser:
             unresolved=[],
             reviewFields=[],
             submission=None,
+            timing={},
         )
         self._page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         self._page.bring_to_front()
@@ -335,6 +463,103 @@ class ManagedBrowser:
         self._set(phase="watching", message="Juno is checking the current application step.")
         self._tick(force=True)
         return self.status()
+
+    def answer_questions(self, answers: Any) -> dict[str, Any]:
+        return self._call(lambda: self._answer_questions(answers))
+
+    def _answer_questions(self, answers: Any) -> dict[str, Any]:
+        if not isinstance(answers, list) or not answers:
+            raise ValueError("Answer at least one application question.")
+        current = self._capture()
+        questions = {
+            str(item.get("fieldId") or ""): item
+            for item in [
+                *(current.get("application", {}).get("unresolvedRequired") or []),
+                *(current.get("application", {}).get("optionalQuestions") or []),
+            ]
+            if item.get("fieldId")
+            and str(item.get("label") or "") not in self._skipped_optional_questions
+        }
+        accepted: list[dict[str, str]] = []
+        for raw in answers[:30]:
+            if not isinstance(raw, dict):
+                continue
+            field_id = str(raw.get("fieldId") or "")
+            value = str(raw.get("value") or "").strip()[:4_000]
+            if field_id not in questions or not value:
+                continue
+            accepted.append({"fieldId": field_id, "value": value})
+        if not accepted:
+            raise ValueError("Those questions changed. Refresh the application and try again.")
+
+        self._set(phase="preparing", message="Adding your answers to the application.")
+        choice_result = self._page.evaluate(CHOICE_FILL_SCRIPT, accepted)
+        handled = set(choice_result.get("handled") or [])
+        regular = [item for item in accepted if item["fieldId"] not in handled]
+        question_fields = [
+            {
+                "fieldId": field_id,
+                "label": str(question.get("label") or ""),
+                "type": str(question.get("type") or "text"),
+                "currentValue": "",
+            }
+            for field_id, question in questions.items()
+        ]
+        fill_result = self._fill_suggestions(regular, question_fields)
+        filled = int(choice_result.get("filled") or 0) + int(fill_result.get("filled") or 0)
+        if not filled:
+            raise ValueError("Clover could not match those answers to the application controls.")
+        remember_user_answers(question_fields, accepted, DEFAULT_PERSON_ID)
+        self._last_signature = ""
+        self._page.wait_for_timeout(250)
+        self._set(phase="watching", message="Juno is checking the application with your answers.")
+        self._tick(force=True)
+        return self.status()
+
+    def skip_optional_questions(self, field_ids: Any) -> dict[str, Any]:
+        return self._call(lambda: self._skip_optional_questions(field_ids))
+
+    def _skip_optional_questions(self, field_ids: Any) -> dict[str, Any]:
+        if not isinstance(field_ids, list) or not field_ids:
+            raise ValueError("Choose at least one optional question to skip.")
+        current = self._capture()
+        optional = {
+            str(item.get("fieldId") or ""): str(item.get("label") or "")
+            for item in current.get("application", {}).get("optionalQuestions") or []
+        }
+        for field_id in field_ids[:20]:
+            label = optional.get(str(field_id or ""))
+            if label:
+                self._skipped_optional_questions.add(label)
+        self._last_signature = ""
+        self._set(phase="watching", message="Juno is continuing without those optional answers.")
+        self._tick(force=True)
+        return self.status()
+
+    def _hydrate_question_options(self, questions: list[dict[str, Any]]) -> None:
+        combobox_ids = set(self._page.evaluate(COMBOBOX_IDS_SCRIPT))
+        for question in questions:
+            field_id = str(question.get("fieldId") or "")
+            if question.get("options") or field_id not in combobox_ids:
+                continue
+            locator = self._page.locator(f"[data-clover-field-id={json.dumps(field_id)}]")
+            try:
+                locator.click(timeout=2_000)
+                self._page.wait_for_timeout(400)
+                controls = locator.get_attribute("aria-controls", timeout=1_000)
+                if controls:
+                    options = self._page.locator(
+                        f"[id={json.dumps(controls)}] [role='option']"
+                    ).all_inner_texts()
+                    question["options"] = [
+                        str(option).strip() for option in options[:30] if str(option).strip()
+                    ]
+                locator.press("Escape", timeout=1_000)
+            except Exception:  # noqa: BLE001 - a free-text fallback remains available
+                try:
+                    locator.press("Escape", timeout=1_000)
+                except Exception:
+                    pass
 
     def _capture(self) -> dict[str, Any]:
         if self._page is None or self._page.is_closed():
@@ -355,10 +580,135 @@ class ManagedBrowser:
                 for item in raw.get("fields") or []
             ],
             "unresolved": raw.get("application", {}).get("unresolvedRequired"),
+            "optionalQuestions": raw.get("application", {}).get("optionalQuestions"),
             "navigation": raw.get("navigation"),
             "submit": raw.get("application", {}).get("submit"),
         }
         return json.dumps(contract, sort_keys=True)
+
+    def _fill_suggestions(
+        self,
+        suggestions: list[dict[str, Any]],
+        fields: list[dict[str, Any]] | None = None,
+    ) -> dict[str, int]:
+        if not suggestions:
+            return {"filled": 0, "skipped": 0}
+        fields = fields or self._capture().get("fields") or []
+        labels_by_id = {
+            str(field.get("fieldId") or ""): str(field.get("label") or "")
+            for field in fields
+        }
+        combobox_ids = set(self._page.evaluate(COMBOBOX_IDS_SCRIPT))
+        regular = [
+            item for item in suggestions if str(item.get("fieldId") or "") not in combobox_ids
+        ]
+        result = self._page.evaluate(FILL_SCRIPT, regular)
+        filled = int(result.get("filled") or 0)
+        skipped = int(result.get("skipped") or 0)
+        for suggestion in suggestions:
+            original_id = str(suggestion.get("fieldId") or "")
+            if original_id not in combobox_ids:
+                continue
+            label = labels_by_id.get(original_id, "")
+            current = self._capture()
+            current_fields = [
+                *(current.get("fields") or []),
+                *(current.get("application", {}).get("unresolvedRequired") or []),
+                *(current.get("application", {}).get("optionalQuestions") or []),
+            ]
+            current_comboboxes = set(self._page.evaluate(COMBOBOX_IDS_SCRIPT))
+            field_id = next(
+                (
+                    str(field.get("fieldId") or "")
+                    for field in current_fields
+                    if str(field.get("label") or "") == label
+                    and str(field.get("fieldId") or "") in current_comboboxes
+                ),
+                "",
+            )
+            if not field_id:
+                skipped += 1
+                continue
+            locator = self._page.locator(f"[data-clover-field-id={json.dumps(field_id)}]")
+            if locator.count() != 1 or locator.input_value(timeout=1_000).strip():
+                skipped += 1
+                continue
+            target = str(suggestion.get("value") or "").strip()
+            try:
+                words = re.findall(r"[A-Za-z0-9]+", target)
+                search_terms = [target]
+                if len(words) > 1:
+                    search_terms.extend(
+                        [" ".join(words[:-1]), " ".join(words[:2]), words[0]]
+                    )
+                labels: list[str] = []
+                options = None
+                for search_term in dict.fromkeys(term for term in search_terms if term):
+                    locator.click(timeout=3_000)
+                    locator.press("ControlOrMeta+A", timeout=1_000)
+                    locator.press("Backspace", timeout=1_000)
+                    locator.type(search_term, delay=10, timeout=3_000)
+                    self._page.wait_for_timeout(700)
+                    controls = locator.get_attribute("aria-controls", timeout=1_000)
+                    options = (
+                        self._page.locator(
+                            f"[id={json.dumps(controls)}] [role='option']"
+                        )
+                        if controls
+                        else self._page.locator("[role='option']:visible")
+                    )
+                    labels = [option.strip() for option in options.all_inner_texts()[:100]]
+                    if labels:
+                        break
+                normalized_target = re.sub(r"\W+", " ", target.casefold()).strip()
+
+                def score(label: str) -> float:
+                    normalized = re.sub(r"\W+", " ", label.casefold()).strip()
+                    if normalized == normalized_target:
+                        return 1.0
+                    if "degree" in labels_by_id.get(original_id, "").casefold():
+                        degree_levels = {
+                            "associate",
+                            "bachelor",
+                            "master",
+                            "doctor",
+                            "phd",
+                        }
+                        target_level = next(
+                            (level for level in degree_levels if level in normalized_target),
+                            "",
+                        )
+                        option_level = next(
+                            (level for level in degree_levels if level in normalized),
+                            "",
+                        )
+                        if target_level and target_level == option_level:
+                            return 1.0
+                    if normalized_target in normalized or normalized in normalized_target:
+                        return 0.9
+                    return difflib.SequenceMatcher(None, normalized_target, normalized).ratio()
+
+                ranked = sorted(
+                    ((score(label), index) for index, label in enumerate(labels)),
+                    reverse=True,
+                )
+                if options is None or not ranked or ranked[0][0] < 0.55:
+                    locator.press("Escape", timeout=1_000)
+                    locator.press("ControlOrMeta+A", timeout=1_000)
+                    locator.press("Backspace", timeout=1_000)
+                    skipped += 1
+                    continue
+                options.nth(ranked[0][1]).click(timeout=3_000)
+                filled += 1
+            except Exception:  # noqa: BLE001 - one custom control must not stop the form
+                try:
+                    locator.press("Escape", timeout=1_000)
+                    locator.press("ControlOrMeta+A", timeout=1_000)
+                    locator.press("Backspace", timeout=1_000)
+                except Exception:
+                    pass
+                skipped += 1
+        return {"filled": filled, "skipped": skipped}
 
     def _tick(self, force: bool = False) -> None:
         if not self.status().get("running") or self._page is None or self._page.is_closed():
@@ -391,47 +741,83 @@ class ManagedBrowser:
         quick = quick_answers(raw.get("fields") or [], DEFAULT_PERSON_ID)
         quick_result = {"filled": 0, "skipped": 0}
         if quick:
-            quick_result = self._page.evaluate(FILL_SCRIPT, quick)
+            quick_result = self._fill_suggestions(quick, raw.get("fields") or [])
         remaining = self._capture()
-        suggestions = suggest_fields(
-            remaining,
-            person_id=DEFAULT_PERSON_ID,
-            opportunity_id=self._opportunity_id or None,
-        ).get("suggestions") or []
+        model_warning = ""
+        try:
+            suggestions = suggest_fields(
+                remaining,
+                person_id=DEFAULT_PERSON_ID,
+                opportunity_id=self._opportunity_id or None,
+            ).get("suggestions") or []
+        except ValueError as exc:
+            suggestions = []
+            model_warning = str(exc)
         safe = [
             item
             for item in suggestions
-            if float(item.get("confidence") or 0) >= 0.85
-            and item.get("source") in {"resume", "memory"}
+            if float(item.get("confidence") or 0) >= 0.7
+            and item.get("source") in {"resume", "memory", "opportunity", "inferred"}
         ]
         review = [item for item in suggestions if item not in safe]
         remember_answers(remaining.get("fields") or [], safe, DEFAULT_PERSON_ID)
         juno_result = {"filled": 0, "skipped": 0}
         if safe:
-            juno_result = self._page.evaluate(FILL_SCRIPT, safe)
+            juno_result = self._fill_suggestions(safe, remaining.get("fields") or [])
         self._page.wait_for_timeout(250)
         current = self._capture()
         if current["application"]["unresolvedRequired"] and quick:
             retry_quick = quick_answers(current.get("fields") or [], DEFAULT_PERSON_ID)
             if retry_quick:
-                retry_result = self._page.evaluate(FILL_SCRIPT, retry_quick)
+                retry_result = self._fill_suggestions(
+                    retry_quick,
+                    current.get("fields") or [],
+                )
                 quick_result["filled"] += int(retry_result.get("filled") or 0)
                 quick_result["skipped"] += int(retry_result.get("skipped") or 0)
                 self._page.wait_for_timeout(250)
                 current = self._capture()
+        question_fields = [
+            *current["application"]["unresolvedRequired"],
+            *(current["application"].get("optionalQuestions") or []),
+        ]
+        remembered = cached_answers(question_fields, DEFAULT_PERSON_ID)
+        if remembered:
+            remembered_result = self._fill_suggestions(remembered, question_fields)
+            quick_result["filled"] += int(remembered_result.get("filled") or 0)
+            quick_result["skipped"] += int(remembered_result.get("skipped") or 0)
+            self._page.wait_for_timeout(250)
+            current = self._capture()
         self._last_signature = self._signature(current)
         timing = {
             "elapsedMs": int((time.monotonic() - started) * 1000),
             "quickFilled": int(quick_result.get("filled") or 0),
             "junoFilled": int(juno_result.get("filled") or 0),
             "resumeUploaded": uploaded,
+            "modelWarning": model_warning,
         }
         unresolved = current["application"]["unresolvedRequired"]
-        if unresolved:
+        optional = [
+            item
+            for item in current["application"].get("optionalQuestions") or []
+            if str(item.get("label") or "") not in self._skipped_optional_questions
+        ]
+        questions = [*unresolved, *optional]
+        if questions:
+            self._hydrate_question_options(questions)
             self._set(
                 phase="needs_input",
-                message="Please complete the highlighted or sensitive questions in Chrome. Juno will continue automatically.",
-                unresolved=unresolved,
+                message=(
+                    "Juno filled the verified basics, but could not prepare the remaining questions. "
+                    "Answer the remaining questions here in Clover."
+                    if model_warning
+                    else (
+                        "Juno needs your answers below before she can continue."
+                        if unresolved
+                        else "Juno filled everything she can. Answer or skip these optional personal questions."
+                    )
+                ),
+                unresolved=questions,
                 reviewFields=review,
                 url=current["url"],
                 timing=timing,
@@ -440,7 +826,7 @@ class ManagedBrowser:
         submit = current["application"]["submit"]
         if submit["available"] or submit["ambiguous"]:
             message = (
-                "The final application is ready for your review."
+                "The application is ready. Review it first if you want, or continue to submission approval."
                 if submit["available"]
                 else "More than one possible submit button was found. Please review the page."
             )

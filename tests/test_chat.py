@@ -15,6 +15,7 @@ from job_agent.chat import (
     _post,
     _run_calls,
     activity_for,
+    complete_json,
     stream,
 )
 from job_agent.reasoning import ThinkingFilter, strip_thinking
@@ -153,6 +154,36 @@ class ToolSurfaceTests(unittest.TestCase):
         observation_arguments = call.call_args_list[1].args[1]
         self.assertEqual("opportunity", observation_arguments["scope"])
         self.assertEqual("active-opportunity", observation_arguments["opportunityId"])
+
+
+class StructuredOutputTests(unittest.TestCase):
+    def test_structured_completion_reads_schema_constrained_reasoning_output(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "reasoning_content": '{"fields":[]}',
+                        }
+                    }
+                ]
+            }
+        ).encode()
+        schema = {
+            "type": "object",
+            "properties": {"fields": {"type": "array", "items": {"type": "string"}}},
+            "required": ["fields"],
+        }
+        with patch("job_agent.chat.wait_for_server", return_value=True):
+            with patch("job_agent.chat.urlopen", return_value=response) as request:
+                result = complete_json("Return fields.", schema=schema, name="fields")
+
+        self.assertEqual({"fields": []}, result)
+        payload = json.loads(request.call_args.args[0].data)
+        self.assertEqual("json_schema", payload["response_format"]["type"])
+        self.assertEqual(schema, payload["response_format"]["json_schema"]["schema"])
 
 
 class EmptyResponseTests(unittest.TestCase):
